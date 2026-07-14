@@ -39,7 +39,7 @@ notification:
   channels:
     feishu:
       enabled: true
-      webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/6aadca1b-8300-42c0-8870-bc4060bc4832
+      webhook_url: https://open.feishu.cn/open-apis/bot/v2/
     dingtalk:
       enabled: false
       webhook_url: https://oapi.dingtalk.com/robot/send?access_token=xxxx
