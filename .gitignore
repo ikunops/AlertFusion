@@ -1,0 +1,10 @@
+.DS_Store
+*.exe
+*.test
+*.out
+/bin/
+/dist/
+/smart-alert-aggregator
+.env
+*.log
+vendor/

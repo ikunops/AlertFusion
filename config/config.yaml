@@ -1,0 +1,48 @@
+server:
+  port: 8088
+
+aggregation:
+  # 距上次告警空闲这么久才刷出（防抖，方便多个站点陆续到达后合并）
+  wait_time: 30s
+  # 从第一条告警起最长等待，到点强制发送
+  max_wait: 90s
+
+blackbox:
+  enabled: true
+  domain_threshold:
+    critical: 2
+
+host_failure:
+  critical_alerts:
+    - NodeDown
+    - TargetDown
+    - PrometheusTargetMissing
+    - InstanceDown
+
+severity:
+  rules:
+    - condition:
+        domain_count: ">=2"
+      level: critical
+
+notification:
+  cluster: xinghui_Prometheus
+  max_items: 10
+  # 相同 alertname 在冷却期内不重复推送（无新增实例时）
+  # 例如 1h = 一小时内同一规则重复 webhook 会被忽略
+  cooldown: 1h
+  # 是否发送告警恢复通知（需 Alertmanager send_resolved: true）
+  send_resolved: true
+  retry:
+    count: 3
+    interval: 5s
+  channels:
+    feishu:
+      enabled: true
+      webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/6aadca1b-8300-42c0-8870-bc4060bc4832
+    dingtalk:
+      enabled: false
+      webhook_url: https://oapi.dingtalk.com/robot/send?access_token=xxxx
+    wechat:
+      enabled: false
+      webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx

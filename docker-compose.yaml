@@ -1,0 +1,12 @@
+services:
+  smart-alert-aggregator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: smart-alert-aggregator:latest
+    container_name: smart-alert-aggregator
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    restart: unless-stopped

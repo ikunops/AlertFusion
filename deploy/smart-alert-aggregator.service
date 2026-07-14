@@ -1,0 +1,24 @@
+[Unit]
+Description=Smart Alert Aggregator Gateway
+Documentation=https://github.com/example/smart-alert-aggregator
+After=network.target
+
+[Service]
+Type=simple
+User=smart-alert
+Group=smart-alert
+WorkingDirectory=/opt/smart-alert-aggregator
+ExecStart=/opt/smart-alert-aggregator/smart-alert-aggregator -config /opt/smart-alert-aggregator/config/config.yaml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/smart-alert-aggregator
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
