@@ -8,3 +8,8 @@
 .env
 *.log
 vendor/
+/data/
+
+# 本地配置含 webhook 等敏感信息，勿提交；请从示例复制
+config/config.yaml
+

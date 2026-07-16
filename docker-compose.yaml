@@ -9,4 +9,5 @@ services:
       - "8088:8088"
     volumes:
       - ./config/config.yaml:/app/config/config.yaml:ro
+      - ./data:/app/data
     restart: unless-stopped

@@ -164,7 +164,7 @@ func TestCooldownPerAlertName(t *testing.T) {
 
 	var sent int
 	stub := notifierStub(func(msg alert.Message) error { sent++; return nil })
-	agg := NewAggregator(cfg, []notifier.Notifier{stub})
+	agg := NewAggregator(cfg, []notifier.Notifier{stub}, nil)
 
 	agg.Ingest([]alert.Alert{
 		{Status: "firing", Fingerprint: "1", Labels: map[string]string{"alertname": "ProbeFailed", "job": "blackbox_http_get_2xx", "instance": "https://a.com", "severity": "critical"}},

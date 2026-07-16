@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>星绘 · 智能告警聚合</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <div class="brand-name">星绘告警</div>
+        <div class="brand-sub" id="clusterName">Smart Alert Aggregator</div>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="alerts" type="button">活跃告警</button>
+      <button class="tab" data-tab="mutes" type="button">屏蔽规则</button>
+      <button class="tab" data-tab="history" type="button">通知历史</button>
+    </nav>
+    <div class="top-actions">
+      <button class="btn ghost" id="btnRefresh" type="button">刷新</button>
+      <button class="btn primary" id="btnNewMute" type="button">新建屏蔽</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="metrics" id="metrics">
+      <article class="metric">
+        <span class="metric-label">活跃告警</span>
+        <strong class="metric-value" id="mActive">—</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">生效屏蔽</span>
+        <strong class="metric-value" id="mMutes">—</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">已通知</span>
+        <strong class="metric-value" id="mNotified">—</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">已屏蔽发送</span>
+        <strong class="metric-value" id="mMuted">—</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">冷却抑制</span>
+        <strong class="metric-value" id="mSuppressed">—</strong>
+      </article>
+      <article class="metric wide">
+        <span class="metric-label">通道 / 冷却</span>
+        <strong class="metric-value sm" id="mMeta">—</strong>
+      </article>
+    </section>
+
+    <section class="panel active" id="panel-alerts">
+      <div class="panel-head">
+        <h2>当前活跃告警</h2>
+        <p>来自 Alertmanager 仍处于 firing 的告警。可按规则或实例屏蔽指定时间段。</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>级别</th>
+              <th>告警名称</th>
+              <th>主机 / 实例</th>
+              <th>描述</th>
+              <th>开始时间</th>
+              <th>状态</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="alertRows"></tbody>
+        </table>
+        <div class="empty" id="alertEmpty" hidden>暂无活跃告警</div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-mutes">
+      <div class="panel-head">
+        <h2>屏蔽规则</h2>
+        <p>匹配规则在生效时间段内不会推送到飞书 / 钉钉 / 企微。</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>状态</th>
+              <th>匹配条件</th>
+              <th>时间段</th>
+              <th>原因</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="muteRows"></tbody>
+        </table>
+        <div class="empty" id="muteEmpty" hidden>暂无屏蔽规则</div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-history">
+      <div class="panel-head">
+        <h2>最近通知与处理</h2>
+        <p>通知发送、屏蔽拦截、冷却抑制与恢复事件。</p>
+      </div>
+      <div class="timeline" id="historyList"></div>
+      <div class="empty" id="historyEmpty" hidden>暂无历史记录</div>
+    </section>
+  </main>
+
+  <dialog id="muteDialog">
+    <form method="dialog" id="muteForm">
+      <header class="dialog-head">
+        <h3>屏蔽告警</h3>
+        <p>选择匹配范围与生效时间段，期间内不再发送通知。</p>
+      </header>
+
+      <div class="form-grid">
+        <label>
+          <span>告警名称 alertname</span>
+          <input name="alertname" id="fAlertname" placeholder="例如 NodeDown，留空则靠其它条件" />
+        </label>
+        <label>
+          <span>主机 hostname</span>
+          <input name="hostname" id="fHostname" placeholder="可选" />
+        </label>
+        <label>
+          <span>实例 instance</span>
+          <input name="instance" id="fInstance" placeholder="可选" />
+        </label>
+        <label>
+          <span>原因说明</span>
+          <input name="reason" id="fReason" placeholder="例如：计划维护 / 已知抖动" required />
+        </label>
+      </div>
+
+      <fieldset class="period">
+        <legend>屏蔽时间段</legend>
+        <div class="chips" id="durationChips">
+          <button type="button" class="chip" data-duration="1h">1 小时</button>
+          <button type="button" class="chip active" data-duration="4h">4 小时</button>
+          <button type="button" class="chip" data-duration="12h">12 小时</button>
+          <button type="button" class="chip" data-duration="24h">1 天</button>
+          <button type="button" class="chip" data-duration="168h">7 天</button>
+          <button type="button" class="chip" data-duration="">永久</button>
+          <button type="button" class="chip" data-duration="custom">自定义时间段</button>
+        </div>
+        <div class="custom-range" id="customRange" hidden>
+          <label>
+            <span>开始时间</span>
+            <input type="datetime-local" id="fStartsAt" />
+          </label>
+          <label>
+            <span>结束时间</span>
+            <input type="datetime-local" id="fExpiresAt" />
+          </label>
+        </div>
+        <p class="period-hint" id="periodHint">将从现在起屏蔽 4 小时</p>
+      </fieldset>
+
+      <footer class="dialog-actions">
+        <button type="button" class="btn ghost" id="btnCancelMute">取消</button>
+        <button type="submit" class="btn primary">确认屏蔽</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

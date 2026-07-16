@@ -9,6 +9,7 @@ import (
 
 	"smart-alert-aggregator/internal/alert"
 	"smart-alert-aggregator/internal/config"
+	"smart-alert-aggregator/internal/mute"
 	"smart-alert-aggregator/internal/notifier"
 	"smart-alert-aggregator/internal/template"
 )
@@ -19,6 +20,20 @@ type ruleState struct {
 	keys    map[string]time.Time
 }
 
+// HistoryEvent is a recent notify / mute / suppress record for the UI.
+type HistoryEvent struct {
+	Time      time.Time `json:"time"`
+	Action    string    `json:"action"` // notified | muted | suppressed | recovered
+	AlertName string    `json:"alertname"`
+	Severity  string    `json:"severity"`
+	Count     int       `json:"count"`
+	Targets   []string  `json:"targets,omitempty"`
+	Detail    string    `json:"detail,omitempty"`
+	Resolved  bool      `json:"resolved"`
+}
+
+const maxHistory = 200
+
 // Aggregator keeps a live view of firing alerts and only notifies when the
 // aggregated picture for a rule (alertname / blackbox) changes.
 type Aggregator struct {
@@ -27,6 +42,7 @@ type Aggregator struct {
 	severity  *SeverityEngine
 	notifiers []notifier.Notifier
 	renderer  *template.Renderer
+	mutes     *mute.Store
 
 	mu sync.Mutex
 
@@ -41,19 +57,153 @@ type Aggregator struct {
 
 	// per-rule cooldown: "rule:HostOomKillDetected"
 	lastByRule map[string]*ruleState
+
+	history []HistoryEvent
+	stats   Stats
 }
 
-func NewAggregator(cfg *config.Config, notifiers []notifier.Notifier) *Aggregator {
+// Stats are runtime counters for the dashboard.
+type Stats struct {
+	ReceivedTotal  int64 `json:"received_total"`
+	NotifiedTotal  int64 `json:"notified_total"`
+	MutedTotal     int64 `json:"muted_total"`
+	SuppressedTotal int64 `json:"suppressed_total"`
+	RecoveredTotal int64 `json:"recovered_total"`
+}
+
+func NewAggregator(cfg *config.Config, notifiers []notifier.Notifier, mutes *mute.Store) *Aggregator {
 	return &Aggregator{
 		cfg:             cfg,
 		analyzer:        NewAnalyzer(cfg),
 		severity:        NewSeverityEngine(cfg),
 		notifiers:       notifiers,
 		renderer:        template.NewRenderer(cfg.Notification.Cluster, cfg.Notification.MaxItems),
+		mutes:           mutes,
 		active:          make(map[string]alert.Alert),
 		buffer:          make([]alert.Alert, 0),
 		pendingResolved: make([]alert.Alert, 0),
 		lastByRule:      make(map[string]*ruleState),
+		history:         make([]HistoryEvent, 0, 64),
+	}
+}
+
+// Snapshot for the UI.
+type Snapshot struct {
+	ActiveCount   int           `json:"active_count"`
+	BufferCount   int           `json:"buffer_count"`
+	WindowOpen    bool          `json:"window_open"`
+	WindowAt      *time.Time    `json:"window_at,omitempty"`
+	MuteActive    int           `json:"mute_active"`
+	Cooldown      string        `json:"cooldown"`
+	Cluster       string        `json:"cluster"`
+	Stats         Stats         `json:"stats"`
+	Notifiers     []string      `json:"notifiers"`
+	ActiveAlerts  []AlertView   `json:"active_alerts"`
+}
+
+// AlertView is a UI-friendly alert row.
+type AlertView struct {
+	Fingerprint string            `json:"fingerprint"`
+	Status      string            `json:"status"`
+	AlertName   string            `json:"alertname"`
+	Severity    string            `json:"severity"`
+	Instance    string            `json:"instance"`
+	Hostname    string            `json:"hostname"`
+	Job         string            `json:"job"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
+	StartsAt    time.Time         `json:"starts_at"`
+	Muted       bool              `json:"muted"`
+	MuteID      string            `json:"mute_id,omitempty"`
+	Description string            `json:"description"`
+	Value       string            `json:"value"`
+}
+
+func (a *Aggregator) Snapshot() Snapshot {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	active := make([]AlertView, 0, len(a.active))
+	for _, al := range a.active {
+		view := AlertView{
+			Fingerprint: al.Fingerprint,
+			Status:      al.Status,
+			AlertName:   al.AlertName(),
+			Severity:    al.Severity(),
+			Instance:    al.Instance(),
+			Hostname:    al.Hostname(),
+			Job:         al.Job(),
+			Labels:      al.Labels,
+			Annotations: al.Annotations,
+			StartsAt:    al.StartsAt,
+			Description: al.Description(),
+			Value:       al.Value(),
+		}
+		if a.mutes != nil {
+			if m := a.mutes.Match(al); m != nil {
+				view.Muted = true
+				view.MuteID = m.ID
+			}
+		}
+		active = append(active, view)
+	}
+	sort.Slice(active, func(i, j int) bool {
+		if active[i].AlertName != active[j].AlertName {
+			return active[i].AlertName < active[j].AlertName
+		}
+		return active[i].Instance < active[j].Instance
+	})
+
+	names := make([]string, 0, len(a.notifiers))
+	for _, n := range a.notifiers {
+		names = append(names, n.Name())
+	}
+
+	var windowAt *time.Time
+	if a.started {
+		t := a.windowAt
+		windowAt = &t
+	}
+	muteActive := 0
+	if a.mutes != nil {
+		muteActive = a.mutes.CountActive()
+	}
+
+	return Snapshot{
+		ActiveCount:  len(a.active),
+		BufferCount:  len(a.buffer),
+		WindowOpen:   a.started,
+		WindowAt:     windowAt,
+		MuteActive:   muteActive,
+		Cooldown:     a.cooldown().String(),
+		Cluster:      a.cfg.Notification.Cluster,
+		Stats:        a.stats,
+		Notifiers:    names,
+		ActiveAlerts: active,
+	}
+}
+
+func (a *Aggregator) History(limit int) []HistoryEvent {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if limit <= 0 || limit > len(a.history) {
+		limit = len(a.history)
+	}
+	out := make([]HistoryEvent, limit)
+	// newest first
+	for i := 0; i < limit; i++ {
+		out[i] = a.history[len(a.history)-1-i]
+	}
+	return out
+}
+
+func (a *Aggregator) pushHistoryLocked(ev HistoryEvent) {
+	if ev.Time.IsZero() {
+		ev.Time = time.Now()
+	}
+	a.history = append(a.history, ev)
+	if len(a.history) > maxHistory {
+		a.history = a.history[len(a.history)-maxHistory:]
 	}
 }
 
@@ -64,6 +214,7 @@ func (a *Aggregator) Ingest(alerts []alert.Alert) {
 	cooldown := a.cooldown()
 	now := time.Now()
 	a.purgeRuleStateLocked(now, cooldown)
+	a.stats.ReceivedTotal += int64(len(alerts))
 
 	var (
 		firing         []alert.Alert
@@ -219,8 +370,37 @@ func (a *Aggregator) flush() {
 		rk := ruleKeyOfIncident(*inc)
 		targets := targetsOfIncident(*inc)
 
+		if a.mutes != nil {
+			if m := a.mutes.MatchIncident(inc.Alerts, firstNonEmpty(inc.Source, inc.Status, inc.Title)); m != nil {
+				log.Printf("aggregator: MUTED firing rule=%s mute=%s reason=%q targets=%v", rk, m.ID, m.Reason, targets)
+				a.mu.Lock()
+				a.stats.MutedTotal++
+				a.pushHistoryLocked(HistoryEvent{
+					Action:    "muted",
+					AlertName: firstNonEmpty(inc.Source, inc.Title),
+					Severity:  inc.Severity,
+					Count:     inc.Count,
+					Targets:   targets,
+					Detail:    "屏蔽规则 " + m.ID + ": " + m.Reason,
+				})
+				a.mu.Unlock()
+				continue
+			}
+		}
+
 		if a.shouldSuppressIncident(rk, targets, cooldown) {
 			log.Printf("aggregator: SUPPRESS firing rule=%s targets=%v", rk, targets)
+			a.mu.Lock()
+			a.stats.SuppressedTotal++
+			a.pushHistoryLocked(HistoryEvent{
+				Action:    "suppressed",
+				AlertName: firstNonEmpty(inc.Source, inc.Title),
+				Severity:  inc.Severity,
+				Count:     inc.Count,
+				Targets:   targets,
+				Detail:    "cooldown " + cooldown.String(),
+			})
+			a.mu.Unlock()
 			continue
 		}
 
@@ -231,6 +411,16 @@ func (a *Aggregator) flush() {
 		log.Printf("aggregator: message[%d]:\n----------\n%s\n----------", i, msg.RawText)
 		if a.dispatch(msg) {
 			a.markRuleNotified(rk, *inc, targets)
+			a.mu.Lock()
+			a.stats.NotifiedTotal++
+			a.pushHistoryLocked(HistoryEvent{
+				Action:    "notified",
+				AlertName: firstNonEmpty(inc.Source, inc.Title),
+				Severity:  inc.Severity,
+				Count:     inc.Count,
+				Targets:   targets,
+			})
+			a.mu.Unlock()
 		}
 	}
 }
@@ -271,10 +461,29 @@ func (a *Aggregator) flushResolved(resolved []alert.Alert) {
 			log.Printf("aggregator: RECOVERY rule=%s source=%s count=%d targets=%v",
 				rk, inc.Source, inc.Count, targets)
 
+			if a.mutes != nil {
+				if m := a.mutes.MatchIncident(inc.Alerts, firstNonEmpty(inc.Source, inc.Status, inc.Title)); m != nil {
+					log.Printf("aggregator: MUTED recovery rule=%s mute=%s", rk, m.ID)
+					a.clearRecoveredTargets(rk, batch, targets)
+					continue
+				}
+			}
+
 			msg := a.renderer.Render(*inc)
 			log.Printf("aggregator: recovery message:\n----------\n%s\n----------", msg.RawText)
 			if a.dispatch(msg) {
 				a.clearRecoveredTargets(rk, batch, targets)
+				a.mu.Lock()
+				a.stats.RecoveredTotal++
+				a.pushHistoryLocked(HistoryEvent{
+					Action:    "recovered",
+					AlertName: firstNonEmpty(inc.Source, inc.Title),
+					Severity:  inc.Severity,
+					Count:     inc.Count,
+					Targets:   targets,
+					Resolved:  true,
+				})
+				a.mu.Unlock()
 			}
 		}
 	}

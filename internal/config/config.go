@@ -15,6 +15,7 @@ type Config struct {
 	HostFailure  HostFailureConfig  `yaml:"host_failure"`
 	Severity     SeverityConfig     `yaml:"severity"`
 	Notification NotificationConfig `yaml:"notification"`
+	Mute         MuteConfig         `yaml:"mute"`
 }
 
 type ServerConfig struct {
@@ -27,8 +28,8 @@ type AggregationConfig struct {
 }
 
 type BlackboxConfig struct {
-	Enabled         bool                   `yaml:"enabled"`
-	DomainThreshold DomainThresholdConfig  `yaml:"domain_threshold"`
+	Enabled         bool                  `yaml:"enabled"`
+	DomainThreshold DomainThresholdConfig `yaml:"domain_threshold"`
 }
 
 type DomainThresholdConfig struct {
@@ -75,6 +76,10 @@ type NotificationChannels struct {
 type ChannelConfig struct {
 	Enabled    bool   `yaml:"enabled"`
 	WebhookURL string `yaml:"webhook_url"`
+}
+
+type MuteConfig struct {
+	StorePath string `yaml:"store_path"` // JSON persistence path for mute rules
 }
 
 // Duration wraps time.Duration for YAML unmarshaling of values like "30s".
@@ -148,6 +153,9 @@ func Default() *Config {
 				Interval: Duration{Duration: 5 * time.Second},
 			},
 		},
+		Mute: MuteConfig{
+			StorePath: "data/mutes.json",
+		},
 	}
 }
 
@@ -186,6 +194,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Notification.Retry.Interval.Duration == 0 {
 		c.Notification.Retry.Interval = Duration{Duration: 5 * time.Second}
+	}
+	if c.Mute.StorePath == "" {
+		c.Mute.StorePath = "data/mutes.json"
 	}
 }
 

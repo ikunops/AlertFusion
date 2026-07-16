@@ -18,7 +18,8 @@ RUN apk add --no-cache ca-certificates tzdata \
 
 WORKDIR /app
 COPY --from=builder /out/smart-alert-aggregator /app/smart-alert-aggregator
-COPY config/config.yaml /app/config/config.yaml
+COPY config/config.example.yaml /app/config/config.yaml
+RUN mkdir -p /app/data && chown -R app:app /app
 
 USER app
 EXPOSE 8088

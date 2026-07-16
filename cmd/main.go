@@ -3,17 +3,22 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/gin-gonic/gin"
 
+	"smart-alert-aggregator/internal/api"
 	"smart-alert-aggregator/internal/config"
 	"smart-alert-aggregator/internal/engine"
+	"smart-alert-aggregator/internal/mute"
 	"smart-alert-aggregator/internal/notifier"
 	"smart-alert-aggregator/internal/webhook"
+	"smart-alert-aggregator/web"
 )
 
 func main() {
@@ -24,6 +29,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+
+	muteStore, err := mute.NewStore(cfg.Mute.StorePath)
+	if err != nil {
+		log.Fatalf("load mute store: %v", err)
+	}
+	log.Printf("mute store: %s (%d rule(s))", muteStore.Path(), muteStore.CountActive())
 
 	notifiers := notifier.BuildNotifiers(cfg)
 	if len(notifiers) == 0 {
@@ -37,17 +48,21 @@ func main() {
 		log.Printf("enabled notifiers: %v", names)
 	}
 
-	aggregator := engine.NewAggregator(cfg, notifiers)
+	aggregator := engine.NewAggregator(cfg, notifiers, muteStore)
 	receiver := webhook.NewReceiver(aggregator)
+	ui := api.New(cfg, aggregator, muteStore)
 
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery(), gin.Logger())
 	receiver.Register(router)
+	ui.Register(router)
+	mountUI(router)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	log.Printf("Smart Alert Aggregator listening on %s (wait_time=%s max_wait=%s cooldown=%s)",
 		addr, cfg.Aggregation.WaitTime.Duration, cfg.Aggregation.MaxWait.Duration, cfg.Notification.Cooldown.Duration)
+	log.Printf("dashboard UI: http://127.0.0.1%s/", addr)
 
 	go func() {
 		if err := router.Run(addr); err != nil {
@@ -62,4 +77,20 @@ func main() {
 	log.Printf("shutting down, flushing buffered alerts...")
 	aggregator.FlushNow()
 	log.Printf("bye")
+}
+
+func mountUI(router *gin.Engine) {
+	staticFS, err := fs.Sub(web.Static, "static")
+	if err != nil {
+		log.Fatalf("embed static: %v", err)
+	}
+	router.StaticFS("/static", http.FS(staticFS))
+	router.GET("/", func(c *gin.Context) {
+		data, err := fs.ReadFile(staticFS, "index.html")
+		if err != nil {
+			c.String(http.StatusInternalServerError, "ui missing")
+			return
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+	})
 }

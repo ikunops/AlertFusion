@@ -32,7 +32,7 @@ Prometheus
     │
 Alertmanager          ← 负责规则、路由、分组、静默
     │  Webhook
-Smart Alert Aggregator ← 本组件：聚合 + 降噪 + 通知模板
+Smart Alert Aggregator ← 本组件：聚合 + 降噪 + 通知模板 + Web 控制台
     │
 飞书 / 钉钉 / 企业微信
 ```
@@ -44,12 +44,14 @@ Smart Alert Aggregator ← 本组件：聚合 + 降噪 + 通知模板
 - 防抖等待窗口（`wait_time` / `max_wait`），错峰到达的 webhook 也能合并
 - **重复告警抑制**（`notification.cooldown`）
 - **恢复通知**（`send_resolved`，需 Alertmanager 打开 `send_resolved: true`）
+- **Web 控制台**：查看活跃告警、通知历史
+- **按时间段屏蔽告警**：快捷时长或自定义起止时间，匹配规则在窗口内不推送
 - 统一通知模板（集群、级别、标签、触发值、描述等）
 - 飞书卡片 / 钉钉 / 企业微信机器人，失败自动重试
 
 #### 非目标（本组件不做）
 
-- Prometheus 规则管理、Silence、Routing
+- Prometheus 规则管理、Silence、Routing（本组件的「屏蔽」只抑制下游通知，不替代 Alertmanager Silence）
 - 替代 Alertmanager
 - Kubernetes 拓扑 / AI 根因 / 自动修复
 
@@ -81,7 +83,7 @@ Prometheus
     │
 Alertmanager                 ← rules, routing, grouping, silences
     │  Webhook
-Smart Alert Aggregator       ← this component: aggregate + denoise + templates
+Smart Alert Aggregator       ← aggregate + denoise + templates + Web UI
     │
 Feishu / DingTalk / WeCom
 ```
@@ -93,12 +95,14 @@ Feishu / DingTalk / WeCom
 - Debounced wait window (`wait_time` / `max_wait`) so staggered webhooks still merge
 - **Repeat suppression** via `notification.cooldown`
 - **Recovery notifications** (`send_resolved`; Alertmanager must also set `send_resolved: true`)
+- **Web console** for active alerts and notification history
+- **Time-window mute**: preset durations or custom start/end; matched alerts are not pushed
 - Unified template (cluster, severity, labels, value, description)
 - Feishu card / DingTalk / WeCom bots with retries
 
 #### Non-goals (v1)
 
-- Prometheus rule management, Silence, or Routing
+- Prometheus rule management, Silence, or Routing (UI mute only blocks downstream notify)
 - Replacing Alertmanager
 - K8s topology / AI RCA / auto-remediation
 
@@ -128,7 +132,13 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
 
 ### 1. Config
 
-Edit `config/config.yaml` and set bot webhooks:
+仓库只提交示例配置。本地请复制后填写真实 webhook（`config/config.yaml` 已被 gitignore）：
+
+```bash
+cp config/config.example.yaml config/config.yaml
+```
+
+编辑 `config/config.yaml`：
 
 ```yaml
 notification:
@@ -139,13 +149,16 @@ notification:
     feishu:
       enabled: true
       webhook_url: https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
+
+mute:
+  store_path: data/mutes.json   # 屏蔽规则持久化路径
 ```
 
 ### 2. Binary + systemd (recommended for production)
 
 ```bash
 sudo useradd -r -s /usr/sbin/nologin smart-alert || true
-sudo mkdir -p /opt/smart-alert-aggregator/config
+sudo mkdir -p /opt/smart-alert-aggregator/config /opt/smart-alert-aggregator/data
 
 sudo cp dist/smart-alert-aggregator-linux-amd64 /opt/smart-alert-aggregator/smart-alert-aggregator
 sudo chmod +x /opt/smart-alert-aggregator/smart-alert-aggregator
@@ -173,6 +186,7 @@ docker run -d \
   --restart unless-stopped \
   -p 8088:8088 \
   -v "$PWD/config/config.yaml:/app/config/config.yaml:ro" \
+  -v "$PWD/data:/app/data" \
   smart-alert-aggregator:latest
 ```
 
@@ -188,8 +202,11 @@ docker compose up -d --build --force-recreate
 ### 4. Local run
 
 ```bash
+cp config/config.example.yaml config/config.yaml   # first time
 go run ./cmd -config config/config.yaml
 ```
+
+打开控制台：<http://127.0.0.1:8088/>
 
 ### 5. Alertmanager
 
@@ -205,6 +222,29 @@ route:
 ```
 
 Examples: `http://127.0.0.1:8088/api/v1/webhook/alertmanager`
+
+---
+
+## Web 控制台
+
+启动服务后访问根路径即可：
+
+| 页面 | 功能 |
+|------|------|
+| 活跃告警 | 查看当前 firing 告警，一键创建屏蔽 |
+| 屏蔽规则 | 查看生效 / 待生效规则，解除屏蔽 |
+| 通知历史 | 通知发送、屏蔽拦截、冷却抑制、恢复事件 |
+
+### 按时间段屏蔽
+
+创建屏蔽时可选择：
+
+- **快捷时长**：1 小时 / 4 小时 / 12 小时 / 1 天 / 7 天 / 永久
+- **自定义时间段**：指定开始、结束时间（可预约未来生效）
+
+匹配条件支持 `alertname`、`hostname`、`instance`（可组合）。规则持久化到 `mute.store_path`（默认 `data/mutes.json`），进程重启后仍生效。
+
+生效窗口内匹配到的告警**不会推送到**飞书 / 钉钉 / 企微（不等同于 Alertmanager Silence）。
 
 ---
 
@@ -231,8 +271,41 @@ Recovery messages use `S1/S2 Resolved`, a green Feishu card, and “告警已恢
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/webhook/alertmanager` | Alertmanager webhook |
+| GET | `/` | Web 控制台 |
 | GET | `/healthz` | Health check |
+| POST | `/api/v1/webhook/alertmanager` | Alertmanager webhook |
+| GET | `/api/v1/dashboard` | 概览：活跃告警、统计、通道信息 |
+| GET | `/api/v1/alerts/active` | 当前活跃告警列表 |
+| GET | `/api/v1/alerts/history` | 最近通知 / 屏蔽 / 抑制历史 |
+| GET | `/api/v1/mutes` | 屏蔽规则列表 |
+| POST | `/api/v1/mutes` | 创建屏蔽规则（支持 `duration` 或 `starts_at`/`expires_at`） |
+| DELETE | `/api/v1/mutes/:id` | 解除屏蔽 |
+| POST | `/api/v1/aggregator/flush` | 立刻刷出缓冲中的告警 |
+
+### 创建屏蔽示例
+
+快捷时长：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/mutes \
+  -H 'Content-Type: application/json' \
+  -d '{"alertname":"NodeDown","reason":"维护","duration":"4h"}'
+```
+
+自定义时间段：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/mutes \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "alertname":"ProbeFailed",
+    "reason":"错峰窗口",
+    "starts_at":"2026-07-16T22:00:00+08:00",
+    "expires_at":"2026-07-17T06:00:00+08:00"
+  }'
+```
+
+永久屏蔽：省略 `duration` 与 `expires_at`。
 
 ---
 
@@ -241,6 +314,7 @@ Recovery messages use `S1/S2 Resolved`, a green Feishu card, and “告警已恢
 | Key | Default | Description |
 |-----|---------|-------------|
 | `server.port` | `8088` | HTTP port |
+| `mute.store_path` | `data/mutes.json` | Mute rules persistence file |
 | `aggregation.wait_time` | `30s` | Debounce idle time before flush |
 | `aggregation.max_wait` | `90s` | Max wait from first alert in a window |
 | `notification.cluster` | `xinghui_Prometheus` | Cluster name in the template |
@@ -257,13 +331,16 @@ Recovery messages use `S1/S2 Resolved`, a green Feishu card, and “告警已恢
 ```
 cmd/main.go
 internal/
-  webhook/     # HTTP receiver
+  api/         # dashboard & mute HTTP APIs
+  webhook/     # Alertmanager webhook receiver
   alert/       # models & parsing
-  engine/      # buffer, analyze, severity, cooldown
+  engine/      # buffer, analyze, severity, cooldown, mute hook
+  mute/        # time-window mute store
   notifier/    # Feishu / DingTalk / WeCom
   template/    # notification templates
   config/      # config loader
-config/config.yaml
+web/           # embedded Web UI (go:embed)
+config/config.example.yaml
 deploy/smart-alert-aggregator.service
 Dockerfile
 docker-compose.yaml
