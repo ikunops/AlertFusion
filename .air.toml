@@ -1,0 +1,26 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  entrypoint = ["./tmp/main.exe", "-config", "config/config.example.yaml"]
+  cmd = "go build -o ./tmp/main.exe ./cmd"
+  delay = 500
+  stop_on_error = true
+  log = "build-errors.log"
+  include_ext = ["go", "html", "css", "js"]
+  exclude_dir = ["tmp", "data", "vendor"]
+  exclude_file = []
+  include_dir = ["internal", "cmd", "web", "config"]
+  kill_delay = "500ms"
+  send_interrupt = true
+
+[proxy]
+  enabled = true
+  app_port = 8088
+  proxy_port = 3000
+
+[log]
+  main_only = false
+
+[misc]
+  clean_on_exit = true

@@ -5,6 +5,14 @@
   let selectedDuration = "4h";
   let mutePrefill = {};
 
+  // History filter state
+  let historySeverity = "all";
+  let historyTime = "all";
+  let historyCustomStart = "";
+  let historyCustomEnd = "";
+  let historyPush = "all";
+  let historyRecover = "all";
+
   const toast = (msg) => {
     const el = $("#toast");
     el.textContent = msg;
@@ -36,6 +44,15 @@
     return "sev-info";
   };
 
+  const severityLabel = {
+    disaster: "紧急",
+    critical: "严重",
+    warning: "告警",
+    warn: "告警",
+    error: "严重",
+    info: "通知",
+  };
+
   const statusClass = (s) => {
     if (s === "active") return "st-active";
     if (s === "scheduled") return "st-scheduled";
@@ -48,6 +65,7 @@
     muted: "已屏蔽",
     suppressed: "冷却抑制",
     recovered: "已恢复",
+    firing: "推送失败",
   };
   const incidentStatusLabel = {
     notified: "已通知",
@@ -55,6 +73,17 @@
     suppressed: "冷却抑制",
     firing: "告警中",
     resolved: "已恢复",
+  };
+
+  const pushRecover = (action) => {
+    switch (action) {
+      case "notified": return ["已通知", "未修复", "push-notified", "recover-unfixed"];
+      case "recovered": return ["已通知", "已修复", "push-notified", "recover-fixed"];
+      case "muted": return ["已屏蔽", "未修复", "push-muted", "recover-unfixed"];
+      case "suppressed": return ["冷却抑制", "未修复", "push-suppressed", "recover-unfixed"];
+      case "firing": return ["推送失败", "未修复", "push-failed", "recover-unfixed"];
+      default: return [actionLabel[action] || action, "未知", "push-muted", "recover-unfixed"];
+    }
   };
 
   async function api(path, opts = {}) {
@@ -192,7 +221,6 @@
         });
       });
 
-      // Build detail section
       const detailRow = document.createElement("tr");
       detailRow.className = "alert-detail";
       detailRow.hidden = true;
@@ -275,6 +303,72 @@
     }
   }
 
+  function applyHistoryFilters(events) {
+    let filtered = events;
+
+    if (historySeverity !== "all") {
+      filtered = filtered.filter(ev => (ev.severity || "").toLowerCase() === historySeverity);
+    }
+
+    if (historyTime !== "all") {
+      const cutoff = timeFilterCutoff(historyTime);
+      if (cutoff) {
+        filtered = filtered.filter(ev => new Date(ev.time) >= cutoff);
+      }
+    } else if (historyCustomStart || historyCustomEnd) {
+      const start = historyCustomStart ? new Date(historyCustomStart) : null;
+      const end = historyCustomEnd ? new Date(historyCustomEnd) : null;
+      if (start) start.setHours(0, 0, 0, 0);
+      if (end) end.setHours(23, 59, 59, 999);
+      filtered = filtered.filter(ev => {
+        const d = new Date(ev.time);
+        if (start && d < start) return false;
+        if (end && d > end) return false;
+        return true;
+      });
+    }
+
+    if (historyPush !== "all") {
+      filtered = filtered.filter(ev => {
+        if (historyPush === "notified") return ev.action === "notified" || ev.action === "recovered";
+        if (historyPush === "firing") return ev.action === "firing";
+        if (historyPush === "muted") return ev.action === "muted";
+        if (historyPush === "suppressed") return ev.action === "suppressed";
+        return true;
+      });
+    }
+
+    if (historyRecover !== "all") {
+      filtered = filtered.filter(ev => {
+        if (historyRecover === "resolved") return ev.action === "recovered";
+        if (historyRecover === "unresolved") return ev.action !== "recovered";
+        return true;
+      });
+    }
+
+    return filtered;
+  }
+
+  function timeFilterCutoff(preset) {
+    const now = new Date();
+    switch (preset) {
+      case "today":
+        now.setHours(0, 0, 0, 0);
+        return now;
+      case "3d":
+        now.setDate(now.getDate() - 3);
+        return now;
+      case "7d":
+        now.setDate(now.getDate() - 7);
+        return now;
+      case "30d":
+        now.setDate(now.getDate() - 30);
+        return now;
+      default:
+        return null;
+    }
+  }
+
   function renderHistory(events) {
     const list = $("#historyList");
     const empty = $("#historyEmpty");
@@ -284,22 +378,77 @@
       return;
     }
     empty.hidden = true;
-    for (const ev of events) {
+
+    const filtered = applyHistoryFilters(events);
+    if (!filtered.length) {
+      list.innerHTML = `<div class="empty">没有匹配的记录</div>`;
+      return;
+    }
+
+    for (const ev of filtered) {
       const div = document.createElement("div");
       div.className = "event";
+      if (ev.action === "suppressed") div.classList.add("suppressed");
       const targets = (ev.targets || []).slice(0, 5).join(", ");
+      const [pushTxt, recvTxt, pushCls, recvCls] = pushRecover(ev.action);
+      const sv = ev.severity || "";
       div.innerHTML = `
-        <div class="event-time">${fmtTime(ev.time)}</div>
-        <div>
-          <div class="event-title">${actionLabel[ev.action] || ev.action} · ${esc(ev.alertname || "—")}</div>
-          <div class="event-meta">
-            <span class="pill ${sevClass(ev.severity)}">${esc(ev.severity || "—")}</span>
-            · 影响 ${ev.count || 0}
-            ${targets ? ` · ${esc(targets)}` : ""}
-            ${ev.detail ? ` · ${esc(ev.detail)}` : ""}
+        <span class="event-time">${fmtTime(ev.time)}</span>
+        <div class="event-body">
+          <div class="event-main">
+            <div class="event-title">${esc(ev.alertname || "—")}</div>
+            <div class="event-meta">
+              <span class="pill ${sevClass(sv)}">${severityLabel[sv.toLowerCase()] || sv}</span>
+              · 影响 ${ev.count || 0}
+              ${targets ? ` · ${esc(targets)}` : ""}
+              ${ev.detail ? ` · ${esc(ev.detail)}` : ""}
+            </div>
+          </div>
+          <div class="event-pills">
+            <span class="history-pill ${pushCls}">${pushTxt}</span>
+            <span class="history-pill ${recvCls}">${recvTxt}</span>
           </div>
         </div>`;
       list.appendChild(div);
+    }
+  }
+
+  function renderMutes(mutes) {
+    const tbody = $("#muteRows");
+    const empty = $("#muteEmpty");
+    tbody.innerHTML = "";
+    if (!mutes.length) {
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    for (const m of mutes) {
+      const cond = [
+        m.alertname && `alertname=${m.alertname}`,
+        m.hostname && `hostname=${m.hostname}`,
+        m.instance && `instance=${m.instance}`,
+      ].filter(Boolean).join(" · ") || "（宽匹配）";
+      const windowText = !m.expires_at
+        ? `${fmtTime(m.starts_at || m.created_at)} → 永久`
+        : `${fmtTime(m.starts_at || m.created_at)} → ${fmtTime(m.expires_at)}`;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><span class="pill ${statusClass(m.status)}">${statusLabel[m.status] || m.status}</span></td>
+        <td class="mono">${esc(cond)}</td>
+        <td class="muted-text">${esc(windowText)}</td>
+        <td>${esc(m.reason || "—")}</td>
+        <td><button class="btn danger sm" type="button">解除</button></td>`;
+      tr.querySelector("button").addEventListener("click", async () => {
+        if (!confirm("确认解除该屏蔽规则？")) return;
+        try {
+          await api(`/api/v1/mutes/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+          toast("已解除屏蔽");
+          refresh();
+        } catch (e) {
+          toast(e.message);
+        }
+      });
+      tbody.appendChild(tr);
     }
   }
 
@@ -466,7 +615,6 @@
     } else if (selectedDuration) {
       body.duration = selectedDuration;
     }
-    // permanent: omit duration & expires_at
 
     try {
       await api("/api/v1/mutes", { method: "POST", body: JSON.stringify(body) });
@@ -476,6 +624,86 @@
     } catch (err) {
       toast(err.message);
     }
+  });
+
+  // History filter event handlers
+  $("#historySeverity").addEventListener("change", (e) => {
+    historySeverity = e.target.value;
+    refresh();
+  });
+
+  $("#historyPush").addEventListener("change", (e) => {
+    historyPush = e.target.value;
+    refresh();
+  });
+
+  $("#historyRecover").addEventListener("change", (e) => {
+    historyRecover = e.target.value;
+    refresh();
+  });
+
+  // Date popover
+  const datePopoverBtn = $("#datePopoverBtn");
+  const datePopoverPanel = $("#datePopoverPanel");
+
+  // Toggle popover
+  datePopoverBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    datePopoverPanel.classList.toggle("open");
+    datePopoverBtn.setAttribute("aria-expanded", datePopoverPanel.classList.contains("open"));
+  });
+
+  // Close popover when clicking outside
+  document.addEventListener("click", (e) => {
+    if (!datePopoverPanel.contains(e.target) && e.target !== datePopoverBtn) {
+      datePopoverPanel.classList.remove("open");
+      datePopoverBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  // Tab switching inside popover
+  $$("#datePopoverPanel .date-popover-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      $$("#datePopoverPanel .date-popover-tab").forEach(t => t.classList.toggle("active", t === tab));
+      const isCustom = tab.dataset.tab === "custom";
+      $("#datePopoverPanel .date-preset-chips").hidden = isCustom;
+      $("#datePopoverPanel .date-custom-range").hidden = !isCustom;
+    });
+  });
+
+  // Preset chips
+  $$("#datePopoverPanel .date-preset-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      $$("#datePopoverPanel .date-preset-chip").forEach(c => c.classList.toggle("active", c === chip));
+      historyTime = chip.dataset.time;
+      historyCustomStart = "";
+      historyCustomEnd = "";
+      datePopoverBtn.textContent = chip.textContent;
+      datePopoverPanel.classList.remove("open");
+      datePopoverBtn.setAttribute("aria-expanded", "false");
+      refresh();
+    });
+  });
+
+  // Apply custom date range
+  $("#datePopoverPanel .date-apply").addEventListener("click", () => {
+    const start = $("#dateStart").value;
+    const end = $("#dateEnd").value;
+    if (!start || !end) {
+      toast("请选择开始和结束日期");
+      return;
+    }
+    if (new Date(start) > new Date(end)) {
+      toast("开始日期不能晚于结束日期");
+      return;
+    }
+    historyTime = "custom";
+    historyCustomStart = start;
+    historyCustomEnd = end;
+    datePopoverBtn.textContent = `${start} ~ ${end}`;
+    datePopoverPanel.classList.remove("open");
+    datePopoverBtn.setAttribute("aria-expanded", "false");
+    refresh();
   });
 
   refresh();

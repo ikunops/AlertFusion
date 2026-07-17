@@ -125,6 +125,7 @@ func (h *Handler) CreateMute(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	h.aggregator.AdjustMutedTotal(1)
 	c.JSON(http.StatusCreated, gin.H{
 		"mute":   rule,
 		"status": rule.StatusAt(time.Now()),
@@ -137,6 +138,7 @@ func (h *Handler) DeleteMute(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "mute not found"})
 		return
 	}
+	h.aggregator.AdjustMutedTotal(-1)
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "id": id})
 }
 

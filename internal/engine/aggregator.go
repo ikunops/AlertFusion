@@ -33,7 +33,7 @@ type HistoryEvent struct {
 	Resolved  bool      `json:"resolved"`
 }
 
-const maxHistory = 200
+const maxHistory = 5000
 
 // Aggregator keeps a live view of firing alerts and only notifies when the
 // aggregated picture for a rule (alertname / blackbox) changes.
@@ -124,6 +124,7 @@ type command struct {
 	notif   config.NotificationConfig
 	resultC chan<- applyResult
 	flushC  chan<- struct{}
+	delta   int64
 }
 
 type cmdKind int
@@ -132,6 +133,7 @@ const (
 	cmdIngest cmdKind = iota
 	cmdFlushNow
 	cmdApplyNotification
+	cmdMuteStats
 )
 
 type applyResult struct {
@@ -172,6 +174,11 @@ func (a *Aggregator) worker() {
 			a.renderer = template.NewRenderer(cmd.notif.Cluster, cmd.notif.MaxItems)
 			a.notifiers = notifier.BuildNotifiers(a.cfg)
 			cmd.resultC <- applyResult{names: a.notifierNames()}
+		case cmdMuteStats:
+			stats.MutedTotal += cmd.delta
+			if stats.MutedTotal < 0 {
+				stats.MutedTotal = 0
+			}
 		}
 		a.publishSnapshot(&state{
 			active: &active, buffer: &buffer, pendingResolved: &pendingResolved,
@@ -219,6 +226,11 @@ func (a *Aggregator) ApplyNotification(n config.NotificationConfig) []string {
 	a.cmdCh <- command{kind: cmdApplyNotification, notif: n, resultC: resultC}
 	res := <-resultC
 	return res.names
+}
+
+// AdjustMutedTotal adjusts the muted notification counter by delta (+1 on create, -1 on delete).
+func (a *Aggregator) AdjustMutedTotal(delta int64) {
+	a.cmdCh <- command{kind: cmdMuteStats, delta: delta}
 }
 
 // Stop terminates the worker goroutine.
@@ -645,6 +657,14 @@ func (a *Aggregator) flushLocked(s *state) {
 			})
 			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "notified", ""))
 		} else {
+			a.pushHistoryCopy(HistoryEvent{
+				Action:    "firing",
+				AlertName: alert.FirstNonEmpty(inc.Source, inc.Title),
+				Severity:  inc.Severity,
+				Count:     inc.Count,
+				Targets:   targets,
+				Detail:    "所有通知通道发送失败",
+			})
 			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "firing", ""))
 		}
 	}

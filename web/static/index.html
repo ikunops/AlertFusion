@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/app.css?v=2" />
 </head>
 <body>
   <div class="atmosphere" aria-hidden="true"></div>
@@ -204,8 +204,58 @@
 
     <section class="panel" id="panel-history">
       <div class="panel-head">
-        <h2>最近通知与处理</h2>
-        <p>通知发送、屏蔽拦截、冷却抑制与恢复事件。</p>
+        <h2>通知历史</h2>
+        <p>完整的推送、屏蔽、抑制与恢复记录。</p>
+      </div>
+      <div class="filter-bar">
+        <select class="filter-select" id="historySeverity" title="告警级别筛选">
+          <option value="all">全部级别</option>
+          <option value="disaster">紧急</option>
+          <option value="critical">严重</option>
+          <option value="warning">告警</option>
+          <option value="info">通知</option>
+        </select>
+        <div class="date-popover">
+          <button type="button" class="date-popover-btn" id="datePopoverBtn" aria-haspopup="true" aria-expanded="false">全部时间</button>
+          <div class="date-popover-panel" id="datePopoverPanel" role="menu">
+            <div class="date-popover-tabs">
+              <button type="button" class="date-popover-tab active" data-tab="preset" role="menuitem">快捷</button>
+              <button type="button" class="date-popover-tab" data-tab="custom" role="menuitem">自定义</button>
+            </div>
+            <div class="date-preset-chips" role="group">
+              <button type="button" class="date-preset-chip active" data-time="all">全部时间</button>
+              <button type="button" class="date-preset-chip" data-time="today">今天</button>
+              <button type="button" class="date-preset-chip" data-time="3d">最近 3 天</button>
+              <button type="button" class="date-preset-chip" data-time="7d">最近 7 天</button>
+              <button type="button" class="date-preset-chip" data-time="30d">最近 30 天</button>
+            </div>
+            <div class="date-custom-range" hidden>
+              <label>
+                <span>开始日期</span>
+                <input type="date" class="date-start" id="dateStart">
+              </label>
+              <label>
+                <span>结束日期</span>
+                <input type="date" class="date-end" id="dateEnd">
+              </label>
+            </div>
+            <div class="date-popover-actions">
+              <button type="button" class="date-popover-btn sm date-apply">应用</button>
+            </div>
+          </div>
+        </div>
+        <select class="filter-select" id="historyPush" title="通知状态筛选">
+          <option value="all">全部</option>
+          <option value="notified">已通知</option>
+          <option value="firing">未通知</option>
+          <option value="muted">已屏蔽</option>
+          <option value="suppressed">冷却抑制</option>
+        </select>
+        <select class="filter-select" id="historyRecover" title="修复状态筛选">
+          <option value="all">全部</option>
+          <option value="resolved">已修复</option>
+          <option value="unresolved">未修复</option>
+        </select>
       </div>
       <div class="timeline" id="historyList"></div>
       <div class="empty" id="historyEmpty" hidden>暂无历史记录</div>
@@ -270,6 +320,6 @@
   </dialog>
 
   <div class="toast" id="toast" hidden></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>
