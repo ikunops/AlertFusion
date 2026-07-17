@@ -5,9 +5,11 @@ services:
       dockerfile: Dockerfile
     image: smart-alert-aggregator:latest
     container_name: smart-alert-aggregator
+    user: "0:0"
     ports:
       - "8088:8088"
     volumes:
+      # config 可只读；页面保存的通知设置写入 data/
       - ./config/config.yaml:/app/config/config.yaml:ro
       - ./data:/app/data
     restart: unless-stopped

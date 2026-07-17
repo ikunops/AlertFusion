@@ -207,6 +207,20 @@ func (a *Aggregator) pushHistoryLocked(ev HistoryEvent) {
 	}
 }
 
+// ApplyNotification updates runtime notification settings and rebuilds notifiers.
+func (a *Aggregator) ApplyNotification(n config.NotificationConfig) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.Notification = n
+	a.renderer = template.NewRenderer(n.Cluster, n.MaxItems)
+	a.notifiers = notifier.BuildNotifiers(a.cfg)
+	names := make([]string, 0, len(a.notifiers))
+	for _, ntf := range a.notifiers {
+		names = append(names, ntf.Name())
+	}
+	return names
+}
+
 func (a *Aggregator) Ingest(alerts []alert.Alert) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -553,12 +567,16 @@ func (a *Aggregator) markRuleNotified(rk string, inc alert.Incident, targets []s
 }
 
 func (a *Aggregator) dispatch(msg alert.Message) bool {
-	if len(a.notifiers) == 0 {
+	a.mu.Lock()
+	ns := append([]notifier.Notifier(nil), a.notifiers...)
+	a.mu.Unlock()
+
+	if len(ns) == 0 {
 		log.Printf("aggregator: no notifiers enabled, message logged only")
 		return true
 	}
 	ok := true
-	for _, n := range a.notifiers {
+	for _, n := range ns {
 		log.Printf("aggregator: sending via %s ...", n.Name())
 		if err := n.Send(msg); err != nil {
 			log.Printf("notifier %s FAILED: %v", n.Name(), err)

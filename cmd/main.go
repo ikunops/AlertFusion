@@ -30,6 +30,13 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
+	overlayPath := config.NotificationOverlayPath(cfg.Mute.StorePath)
+	if applied, err := config.ApplyNotificationOverlay(overlayPath, cfg); err != nil {
+		log.Fatalf("load notification overlay: %v", err)
+	} else if applied {
+		log.Printf("notification overlay loaded: %s", overlayPath)
+	}
+
 	muteStore, err := mute.NewStore(cfg.Mute.StorePath)
 	if err != nil {
 		log.Fatalf("load mute store: %v", err)
@@ -50,7 +57,7 @@ func main() {
 
 	aggregator := engine.NewAggregator(cfg, notifiers, muteStore)
 	receiver := webhook.NewReceiver(aggregator)
-	ui := api.New(cfg, aggregator, muteStore)
+	ui := api.New(cfg, *configPath, overlayPath, aggregator, muteStore)
 
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()

@@ -211,12 +211,51 @@
       .replaceAll('"', "&quot;");
   }
 
+  function fillChannelStatus(id, ch) {
+    const el = $(id);
+    if (!ch) {
+      el.textContent = "未配置";
+      el.className = "channel-status off";
+      return;
+    }
+    if (ch.active) {
+      el.textContent = "运行中：已启用且 webhook 有效";
+      el.className = "channel-status ok";
+    } else if (ch.enabled) {
+      el.textContent = "已勾选启用，但 webhook 为空或仍是占位符";
+      el.className = "channel-status warn";
+    } else {
+      el.textContent = "未启用";
+      el.className = "channel-status off";
+    }
+  }
+
+  function fillSettings(n) {
+    if (!n) return;
+    $("#sCluster").value = n.cluster || "";
+    $("#sCooldown").value = n.cooldown || "";
+    $("#sMaxItems").value = n.max_items ?? 10;
+    $("#sSendResolved").checked = !!n.send_resolved;
+    $("#feishuEnabled").checked = !!n.channels?.feishu?.enabled;
+    $("#feishuURL").value = n.channels?.feishu?.webhook_url || "";
+    $("#dingtalkEnabled").checked = !!n.channels?.dingtalk?.enabled;
+    $("#dingtalkURL").value = n.channels?.dingtalk?.webhook_url || "";
+    $("#wechatEnabled").checked = !!n.channels?.wechat?.enabled;
+    $("#wechatURL").value = n.channels?.wechat?.webhook_url || "";
+    fillChannelStatus("#feishuStatus", n.channels?.feishu);
+    fillChannelStatus("#dingtalkStatus", n.channels?.dingtalk);
+    fillChannelStatus("#wechatStatus", n.channels?.wechat);
+    const active = (n.active_notifiers || []).join(", ") || "无";
+    $("#settingsHint").textContent = `生效通道：${active} · 保存到 ${n.config_path || "config 文件"}`;
+  }
+
   async function refresh() {
     try {
-      const [dash, mutes, history] = await Promise.all([
+      const [dash, mutes, history, settings] = await Promise.all([
         api("/api/v1/dashboard"),
         api("/api/v1/mutes"),
         api("/api/v1/alerts/history"),
+        api("/api/v1/settings/notification"),
       ]);
       $("#clusterName").textContent = dash.cluster || "Smart Alert Aggregator";
       $("#mActive").textContent = dash.active_count ?? 0;
@@ -229,6 +268,7 @@
       renderAlerts(dash.active_alerts || []);
       renderMutes(mutes.mutes || []);
       renderHistory(history.events || []);
+      fillSettings(settings);
     } catch (e) {
       toast("加载失败: " + e.message);
     }
@@ -263,6 +303,41 @@
   $("#btnNewMute").addEventListener("click", () => openMuteDialog({ reason: "手动屏蔽" }));
   $("#btnRefresh").addEventListener("click", refresh);
   $("#btnCancelMute").addEventListener("click", () => $("#muteDialog").close());
+
+  $("#channelForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = {
+      cluster: $("#sCluster").value.trim(),
+      cooldown: $("#sCooldown").value.trim(),
+      send_resolved: $("#sSendResolved").checked,
+      max_items: Number($("#sMaxItems").value) || 10,
+      channels: {
+        feishu: {
+          enabled: $("#feishuEnabled").checked,
+          webhook_url: $("#feishuURL").value.trim(),
+        },
+        dingtalk: {
+          enabled: $("#dingtalkEnabled").checked,
+          webhook_url: $("#dingtalkURL").value.trim(),
+        },
+        wechat: {
+          enabled: $("#wechatEnabled").checked,
+          webhook_url: $("#wechatURL").value.trim(),
+        },
+      },
+    };
+    try {
+      const res = await api("/api/v1/settings/notification", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      fillSettings(res.notification);
+      toast(`已保存，生效通道：${(res.active_notifiers || []).join(", ") || "无"}`);
+      refresh();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
 
   $("#muteForm").addEventListener("submit", async (e) => {
     e.preventDefault();

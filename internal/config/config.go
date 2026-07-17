@@ -100,6 +100,13 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+func (d Duration) MarshalYAML() (interface{}, error) {
+	if d.Duration == 0 {
+		return "0s", nil
+	}
+	return d.Duration.String(), nil
+}
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -112,6 +119,34 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.applyDefaults()
 	return cfg, nil
+}
+
+// Save writes the config back to path (used by Web UI settings).
+// On Docker file bind-mounts, rename(tmp → target) fails with "device or resource busy";
+// we fall back to in-place overwrite in that case.
+func (c *Config) Save(path string) error {
+	if path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	c.applyDefaults()
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err == nil {
+		if err := os.Rename(tmp, path); err == nil {
+			return nil
+		}
+		_ = os.Remove(tmp)
+		// fall through: common when path is a Docker bind-mounted file
+	}
+
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
 }
 
 func Default() *Config {

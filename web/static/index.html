@@ -23,6 +23,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="alerts" type="button">活跃告警</button>
       <button class="tab" data-tab="mutes" type="button">屏蔽规则</button>
+      <button class="tab" data-tab="channels" type="button">通知方式</button>
       <button class="tab" data-tab="history" type="button">通知历史</button>
     </nav>
     <div class="top-actions">
@@ -103,6 +104,88 @@
         </table>
         <div class="empty" id="muteEmpty" hidden>暂无屏蔽规则</div>
       </div>
+    </section>
+
+    <section class="panel" id="panel-channels">
+      <div class="panel-head">
+        <h2>通知方式</h2>
+        <p>编辑飞书 / 钉钉 / 企业微信通道。保存后立即生效，并写入可写的 data 目录（Docker 请挂载 data 卷）。</p>
+      </div>
+      <form id="channelForm" class="settings">
+        <div class="settings-block">
+          <h3>通用通知设置</h3>
+          <div class="form-grid">
+            <label>
+              <span>告警集群名</span>
+              <input id="sCluster" placeholder="xinghui_Prometheus" />
+            </label>
+            <label>
+              <span>重复冷却 cooldown</span>
+              <input id="sCooldown" placeholder="1h / 30m / 8h" />
+            </label>
+            <label>
+              <span>单条最多展示条数</span>
+              <input id="sMaxItems" type="number" min="1" max="100" />
+            </label>
+            <label class="check-row">
+              <span>发送恢复通知</span>
+              <input id="sSendResolved" type="checkbox" />
+            </label>
+          </div>
+        </div>
+
+        <div class="channel-grid">
+          <article class="channel-card" data-channel="feishu">
+            <header>
+              <h3>飞书 Feishu</h3>
+              <label class="switch">
+                <input type="checkbox" id="feishuEnabled" />
+                <span>启用</span>
+              </label>
+            </header>
+            <label>
+              <span>Webhook URL</span>
+              <input id="feishuURL" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
+            </label>
+            <p class="channel-status" id="feishuStatus">—</p>
+          </article>
+
+          <article class="channel-card" data-channel="dingtalk">
+            <header>
+              <h3>钉钉 DingTalk</h3>
+              <label class="switch">
+                <input type="checkbox" id="dingtalkEnabled" />
+                <span>启用</span>
+              </label>
+            </header>
+            <label>
+              <span>Webhook URL</span>
+              <input id="dingtalkURL" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." />
+            </label>
+            <p class="channel-status" id="dingtalkStatus">—</p>
+          </article>
+
+          <article class="channel-card" data-channel="wechat">
+            <header>
+              <h3>企业微信 WeCom</h3>
+              <label class="switch">
+                <input type="checkbox" id="wechatEnabled" />
+                <span>启用</span>
+              </label>
+            </header>
+            <label>
+              <span>Webhook URL</span>
+              <input id="wechatURL" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." />
+            </label>
+            <p class="channel-status" id="wechatStatus">—</p>
+          </article>
+        </div>
+
+        <footer class="settings-actions">
+          <p class="muted-text" id="settingsHint">配置将保存到本地 config 文件</p>
+          <button class="btn primary" type="submit">保存通知设置</button>
+        </footer>
+      </form>
     </section>
 
     <section class="panel" id="panel-history">
