@@ -17,6 +17,8 @@
     if (!v) return "—";
     const d = new Date(v);
     if (Number.isNaN(d.getTime())) return "—";
+    const y = d.getFullYear();
+    if (y < 2000 || y > 2100) return "—";
     return d.toLocaleString("zh-CN", { hour12: false });
   };
 
