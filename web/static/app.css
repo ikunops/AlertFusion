@@ -344,8 +344,9 @@ tbody tr:hover td { background: rgba(11, 110, 110, 0.04); }
   border-radius: 12px;
 }
 .event.suppressed {
-  background: rgba(196, 132, 29, 0.06);
-  border-color: rgba(196, 132, 29, 0.2);
+  background: rgba(196, 132, 29, 0.14);
+  border-color: rgba(196, 132, 29, 0.4);
+  border-left: 3px solid rgba(196, 132, 29, 0.6);
 }
 .event-time { font-family: var(--mono); font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; flex-shrink: 0; }
 .event-body { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }

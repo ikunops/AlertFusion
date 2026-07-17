@@ -405,10 +405,23 @@
     for (const ev of pageItems) {
       const div = document.createElement("div");
       div.className = "event";
-      if (ev.action === "suppressed") div.classList.add("suppressed");
+      const isSuppressed = ev.action === "suppressed";
+      const isMuted = ev.action === "muted";
+      if (isSuppressed) div.classList.add("suppressed");
       const targets = (ev.targets || []).slice(0, 5).join(", ");
-      const [pushTxt, recvTxt, pushCls, recvCls] = pushRecover(ev.action);
+      const [pushTxt, recvTxt, pushCls, ] = pushRecover(ev.action);
       const sv = ev.severity || "";
+      let pills;
+      if (isSuppressed) {
+        // 冷却抑制：不用小胶囊，仅靠加深的背景色表示；仅保留修复状态胶囊
+        pills = `<span class="history-pill ${recoverClass(ev.action)}">${recvTxt}</span>`;
+      } else if (isMuted) {
+        // 已屏蔽：增加一个"已屏蔽"胶囊，并保留修复状态胶囊（已屏蔽本身替代通知状态）
+        pills = `<span class="history-pill push-muted">已屏蔽</span><span class="history-pill ${recoverClass(ev.action)}">${recvTxt}</span>`;
+      } else {
+        // 其它：通知状态 + 修复状态 两个胶囊
+        pills = `<span class="history-pill ${pushCls}">${pushTxt}</span><span class="history-pill ${recoverClass(ev.action)}">${recvTxt}</span>`;
+      }
       div.innerHTML = `
         <span class="event-time">${fmtTime(ev.time)}</span>
         <div class="event-body">
@@ -421,10 +434,7 @@
               ${ev.detail ? ` · ${esc(ev.detail)}` : ""}
             </div>
           </div>
-          <div class="event-pills">
-            <span class="history-pill ${pushCls}">${pushTxt}</span>
-            <span class="history-pill ${recvCls}">${recvTxt}</span>
-          </div>
+          <div class="event-pills">${pills}</div>
         </div>`;
       list.appendChild(div);
     }
