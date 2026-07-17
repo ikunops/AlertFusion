@@ -366,8 +366,8 @@ tbody tr:hover td { background: rgba(11, 110, 110, 0.04); }
 
 /* === Filter Bar === */
 .filter-bar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   align-items: center;
   margin-bottom: 16px;
@@ -388,7 +388,8 @@ tbody tr:hover td { background: rgba(11, 110, 110, 0.04); }
   color: var(--ink);
   cursor: pointer;
   appearance: none;
-  min-width: 140px;
+  width: 100%;
+  min-width: 0;
 }
 .filter-select:focus {
   outline: 2px solid rgba(11, 110, 110, 0.25);
@@ -412,6 +413,8 @@ tbody tr:hover td { background: rgba(11, 110, 110, 0.04); }
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  justify-content: center;
 }
 .date-popover-btn:hover {
   border-color: var(--teal);
