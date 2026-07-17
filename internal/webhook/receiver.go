@@ -56,8 +56,8 @@ func (r *Receiver) HandleAlertmanager(c *gin.Context) {
 
 	log.Printf("webhook: parsed %d alert(s)", len(alerts))
 	for i, a := range alerts {
-		log.Printf("webhook: alert[%d] status=%s alertname=%s severity=%s hostname=%s instance=%s job=%s labels=%v annotations=%v",
-			i, a.Status, a.AlertName(), a.Severity(), a.Hostname(), a.Instance(), a.Job(), a.Labels, a.Annotations)
+		log.Printf("webhook: alert[%d] status=%s alertname=%s severity=%s hostname=%s instance=%s job=%s startsAt=%s labels=%v annotations=%v",
+			i, a.Status, a.AlertName(), a.Severity(), a.Hostname(), a.Instance(), a.Job(), a.StartsAt.Format(time.RFC3339), a.Labels, a.Annotations)
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)

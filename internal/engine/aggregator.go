@@ -279,6 +279,10 @@ func (a *Aggregator) publishSnapshot(s *state) {
 
 	views := make([]AlertView, 0, len(active))
 	for _, al := range active {
+		startsAt := al.StartsAt
+		if startsAt.IsZero() {
+			startsAt = time.Now()
+		}
 		view := AlertView{
 			Fingerprint: al.Fingerprint,
 			Status:      al.Status,
@@ -289,7 +293,7 @@ func (a *Aggregator) publishSnapshot(s *state) {
 			Job:         al.Job(),
 			Labels:      al.Labels,
 			Annotations: al.Annotations,
-			StartsAt:    al.StartsAt,
+			StartsAt:    startsAt,
 			Description: al.Description(),
 			Value:       al.Value(),
 		}
@@ -394,6 +398,10 @@ func (a *Aggregator) syncResolvedIncidents(s *state) {
 }
 
 func makeIncidentView(inc *alert.Incident, targets []string, status, muteReason string) IncidentView {
+	firedAt := inc.FiredAt
+	if firedAt.IsZero() {
+		firedAt = time.Now()
+	}
 	return IncidentView{
 		Type:       string(inc.Type),
 		Title:      inc.Title,
@@ -406,7 +414,7 @@ func makeIncidentView(inc *alert.Incident, targets []string, status, muteReason 
 		Count:      inc.Count,
 		Suggestion: inc.Suggestion,
 		Possible:   inc.Possible,
-		FiredAt:    inc.FiredAt,
+		FiredAt:    firedAt,
 		Resolved:   inc.Resolved,
 		Status:     status,
 		Targets:    targets,
