@@ -376,21 +376,24 @@
     const list = $("#historyList");
     const empty = $("#historyEmpty");
     const countEl = $("#historyCount");
+    const pagination = $("#historyPagination");
     list.innerHTML = "";
 
     filteredEvents = applyHistoryFilters(events);
-    if (countEl) countEl.textContent = `共 ${filteredEvents.length} 条`;
 
     if (!events.length) {
       empty.hidden = false;
-      $("#historyPagination").hidden = true;
+      if (countEl) countEl.hidden = true;
+      if (pagination) pagination.hidden = true;
       return;
     }
     empty.hidden = true;
+    if (countEl) countEl.hidden = false;
+    if (countEl) countEl.textContent = `共 ${filteredEvents.length} 条`;
 
     if (!filteredEvents.length) {
       list.innerHTML = `<div class="empty">没有匹配的记录</div>`;
-      $("#historyPagination").hidden = true;
+      if (pagination) pagination.hidden = true;
       return;
     }
 

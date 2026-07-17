@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -109,11 +110,25 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-func (d Duration) MarshalYAML() (interface{}, error) {
+func (d Duration) String() string {
 	if d.Duration == 0 {
-		return "0s", nil
+		return "0s"
 	}
-	return d.Duration.String(), nil
+	s := d.Duration.String()
+	if strings.HasSuffix(s, "0s") {
+		s = s[:len(s)-2]
+	}
+	if strings.HasSuffix(s, "0m") {
+		s = s[:len(s)-2]
+	}
+	if s == "" {
+		return "0s"
+	}
+	return s
+}
+
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return d.String(), nil
 }
 
 func Load(path string) (*Config, error) {
