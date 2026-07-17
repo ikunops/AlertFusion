@@ -88,13 +88,19 @@ body {
   background: transparent;
   color: var(--ink-soft);
   font: inherit;
+  font-size: 0.92rem;
   font-weight: 600;
-  padding: 8px 16px;
+  padding: 10px 20px;
   border-radius: 999px;
   cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.tab:hover {
+  color: var(--teal);
+  background: rgba(11, 110, 110, 0.06);
 }
 .tab.active {
-  background: var(--ink);
+  background: var(--teal);
   color: #fff;
 }
 
