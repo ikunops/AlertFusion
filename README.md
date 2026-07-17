@@ -320,6 +320,7 @@ curl -X POST http://127.0.0.1:8088/api/v1/mutes \
 | Key | Default | Description |
 |-----|---------|-------------|
 | `server.port` | `8088` | HTTP port |
+| `api.token` | `""` (open) | When set, all console/management APIs (except the Alertmanager webhook) require `Authorization: Bearer <token>` |
 | `mute.store_path` | `data/mutes.json` | Mute rules persistence file |
 | `aggregation.wait_time` | `30s` | Debounce idle time before flush |
 | `aggregation.max_wait` | `90s` | Max wait from first alert in a window |

@@ -36,7 +36,11 @@ func (s *SeverityEngine) Elevate(inc alert.Incident) string {
 		if threshold <= 0 {
 			threshold = 2
 		}
-		if len(inc.Domains) >= threshold {
+		n := len(inc.Domains)
+		if n == 0 {
+			n = len(inc.Anomalies)
+		}
+		if n >= threshold {
 			elevated = higherSeverity(elevated, "critical")
 		}
 	}

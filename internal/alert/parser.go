@@ -38,7 +38,9 @@ func ParseWebhook(body []byte) ([]Alert, error) {
 		return nil, fmt.Errorf("invalid alertmanager webhook: %w", err)
 	}
 	if len(payload.Alerts) == 0 {
-		return nil, fmt.Errorf("webhook contains no alerts")
+		// Alertmanager may send a heartbeat / resolved-only payload with no
+		// alerts; allow it and let the engine treat it as a no-op.
+		return []Alert{}, nil
 	}
 
 	alerts := make([]Alert, 0, len(payload.Alerts))

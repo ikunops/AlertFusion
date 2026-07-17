@@ -47,6 +47,13 @@
     suppressed: "冷却抑制",
     recovered: "已恢复",
   };
+  const incidentStatusLabel = {
+    notified: "已通知",
+    muted: "已屏蔽",
+    suppressed: "冷却抑制",
+    firing: "告警中",
+    resolved: "已恢复",
+  };
 
   async function api(path, opts = {}) {
     const res = await fetch(path, {
@@ -97,6 +104,52 @@
     $("#fExpiresAt").value = toLocalInput(later);
     updatePeriodHint();
     $("#muteDialog").showModal();
+  }
+
+  function renderIncidents(incidents) {
+    const list = $("#incidentList");
+    const empty = $("#incidentEmpty");
+    list.innerHTML = "";
+    if (!incidents.length) {
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    for (const inc of incidents) {
+      const card = document.createElement("div");
+      card.className = "incident-card";
+
+      const statusCls = inc.status === "notified" ? "st-active"
+        : inc.status === "resolved" ? "st-muted"
+        : inc.status === "muted" ? "st-muted"
+        : inc.status === "suppressed" ? "st-scheduled"
+        : "st-active";
+      const statusTxt = incidentStatusLabel[inc.status] || inc.status;
+
+      const targets = (inc.targets || []).join(", ");
+      const possible = (inc.possible || []).map(p => `<li>${esc(p)}</li>`).join("");
+      const cardHtml = `
+        <div class="incident-head">
+          <div class="incident-left">
+            <span class="pill ${sevClass(inc.severity)}">${esc(inc.severity || "unknown")}</span>
+            <span class="incident-title">${esc(inc.alertname || inc.title || "—")}</span>
+          </div>
+          <span class="pill ${statusCls}">${statusTxt}</span>
+        </div>
+        <div class="incident-meta">
+          <span>影响 ${inc.count || 0} 台</span>
+          ${inc.job ? `<span>job: ${esc(inc.job)}</span>` : ""}
+          <span>${fmtTime(inc.fired_at)}</span>
+          ${inc.type ? `<span class="mono muted-text">${esc(inc.type)}</span>` : ""}
+        </div>
+        ${targets ? `<div class="incident-targets"><strong>受影响目标:</strong> ${esc(targets)}</div>` : ""}
+        ${inc.suggestion ? `<div class="incident-suggestion"><strong>处理建议:</strong> ${esc(inc.suggestion)}</div>` : ""}
+        ${possible ? `<div class="incident-possible"><strong>可能原因:</strong><ul>${possible}</ul></div>` : ""}
+        ${inc.mute_reason ? `<div class="incident-mute-reason"><strong>屏蔽原因:</strong> ${esc(inc.mute_reason)}</div>` : ""}
+      `;
+      card.innerHTML = cardHtml;
+      list.appendChild(card);
+    }
   }
 
   function renderAlerts(alerts) {
@@ -251,14 +304,16 @@
 
   async function refresh() {
     try {
-      const [dash, mutes, history, settings] = await Promise.all([
+      const [dash, mutes, history, settings, incidents] = await Promise.all([
         api("/api/v1/dashboard"),
         api("/api/v1/mutes"),
         api("/api/v1/alerts/history"),
         api("/api/v1/settings/notification"),
+        api("/api/v1/incidents"),
       ]);
       $("#clusterName").textContent = dash.cluster || "Smart Alert Aggregator";
       $("#mActive").textContent = dash.active_count ?? 0;
+      $("#mIncidents").textContent = dash.incident_count ?? 0;
       $("#mMutes").textContent = dash.mute_active ?? 0;
       $("#mNotified").textContent = dash.stats?.notified_total ?? 0;
       $("#mMuted").textContent = dash.stats?.muted_total ?? 0;
@@ -266,6 +321,7 @@
       const channels = (dash.notifiers || []).join(", ") || "未启用通道";
       $("#mMeta").textContent = `${channels} · cooldown ${dash.cooldown || "—"}`;
       renderAlerts(dash.active_alerts || []);
+      renderIncidents(incidents.incidents || []);
       renderMutes(mutes.mutes || []);
       renderHistory(history.events || []);
       fillSettings(settings);

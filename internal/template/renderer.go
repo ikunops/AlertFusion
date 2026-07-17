@@ -30,7 +30,7 @@ func (r *Renderer) Render(inc alert.Incident) alert.Message {
 	if sev == "" {
 		sev = "warning"
 	}
-	alertname := firstNonEmpty(inc.Source, inc.Status, inc.Title)
+	alertname := alert.FirstNonEmpty(inc.Source, inc.Status, inc.Title)
 	statusText := "Triggered"
 	if inc.Resolved {
 		statusText = "Resolved"
@@ -352,15 +352,6 @@ func severityEmoji(sev string, t alert.IncidentType) string {
 	default:
 		return "ℹ️"
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func stripMD(s string) string {

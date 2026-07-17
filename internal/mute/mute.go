@@ -3,6 +3,7 @@ package mute
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -78,7 +79,8 @@ func (s *Store) load() error {
 	}
 	var rules []Rule
 	if err := json.Unmarshal(data, &rules); err != nil {
-		return fmt.Errorf("parse mute store: %w", err)
+		log.Printf("WARNING: mute store %s is corrupted (%v), starting with empty rules", s.path, err)
+		return nil
 	}
 	s.rules = rules
 	s.purgeExpiredLocked(time.Now())
@@ -221,7 +223,10 @@ func (s *Store) Match(a alert.Alert) *Rule {
 	return nil
 }
 
-// MatchIncident returns a mute rule if the whole incident should be suppressed.
+// MatchIncident returns a mute rule if the incident should be suppressed.
+// An incident is suppressed when at least one of its alerts matches an active
+// mute rule (matching "alertname" alone suppresses the whole aggregated notice,
+// since a single aggregated message cannot partially include/exclude targets).
 func (s *Store) MatchIncident(alerts []alert.Alert, source string) *Rule {
 	if len(alerts) == 0 {
 		return s.Match(alert.Alert{Labels: map[string]string{"alertname": source}})
@@ -230,40 +235,24 @@ func (s *Store) MatchIncident(alerts []alert.Alert, source string) *Rule {
 	defer s.mu.RUnlock()
 	now := time.Now()
 
-	for i := range s.rules {
-		r := &s.rules[i]
-		if !r.ActiveAt(now) {
-			continue
-		}
-		if r.AlertName != "" && (r.AlertName == source || r.AlertName == "*") &&
-			r.Instance == "" && r.Hostname == "" && len(r.Matchers) == 0 {
-			cp := *r
-			return &cp
-		}
-	}
-
-	var covering *Rule
 	for _, a := range alerts {
-		var matched *Rule
 		for i := range s.rules {
 			r := &s.rules[i]
 			if !r.ActiveAt(now) {
 				continue
 			}
+			if r.AlertName != "" && (r.AlertName == source || r.AlertName == "*") &&
+				r.Instance == "" && r.Hostname == "" && len(r.Matchers) == 0 {
+				cp := *r
+				return &cp
+			}
 			if ruleMatches(r, a) {
-				matched = r
-				break
+				cp := *r
+				return &cp
 			}
 		}
-		if matched == nil {
-			return nil
-		}
-		if covering == nil {
-			cp := *matched
-			covering = &cp
-		}
 	}
-	return covering
+	return nil
 }
 
 func ruleMatches(r *Rule, a alert.Alert) bool {

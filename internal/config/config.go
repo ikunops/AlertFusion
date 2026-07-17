@@ -16,10 +16,19 @@ type Config struct {
 	Severity     SeverityConfig     `yaml:"severity"`
 	Notification NotificationConfig `yaml:"notification"`
 	Mute         MuteConfig         `yaml:"mute"`
+	API          APIConfig          `yaml:"api"`
 }
 
 type ServerConfig struct {
 	Port int `yaml:"port"`
+}
+
+// APIConfig controls access to the Web console and management APIs.
+type APIConfig struct {
+	// Token, when non-empty, requires callers to present it via the
+	// "Authorization: Bearer <token>" header (or ?token= query param) for
+	// mutating and read endpoints. The Alertmanager webhook is NOT protected.
+	Token string `yaml:"token"`
 }
 
 type AggregationConfig struct {
@@ -191,6 +200,7 @@ func Default() *Config {
 		Mute: MuteConfig{
 			StorePath: "data/mutes.json",
 		},
+		API: APIConfig{},
 	}
 }
 

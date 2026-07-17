@@ -21,7 +21,8 @@
       </div>
     </div>
     <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="alerts" type="button">活跃告警</button>
+      <button class="tab" data-tab="alerts" type="button">活跃告警</button>
+      <button class="tab active" data-tab="incidents" type="button">活跃事件</button>
       <button class="tab" data-tab="mutes" type="button">屏蔽规则</button>
       <button class="tab" data-tab="channels" type="button">通知方式</button>
       <button class="tab" data-tab="history" type="button">通知历史</button>
@@ -37,6 +38,10 @@
       <article class="metric">
         <span class="metric-label">活跃告警</span>
         <strong class="metric-value" id="mActive">—</strong>
+      </article>
+      <article class="metric">
+        <span class="metric-label">活跃事件</span>
+        <strong class="metric-value" id="mIncidents">—</strong>
       </article>
       <article class="metric">
         <span class="metric-label">生效屏蔽</span>
@@ -60,7 +65,7 @@
       </article>
     </section>
 
-    <section class="panel active" id="panel-alerts">
+    <section class="panel" id="panel-alerts">
       <div class="panel-head">
         <h2>当前活跃告警</h2>
         <p>来自 Alertmanager 仍处于 firing 的告警。可按规则或实例屏蔽指定时间段。</p>
@@ -82,6 +87,15 @@
         </table>
         <div class="empty" id="alertEmpty" hidden>暂无活跃告警</div>
       </div>
+    </section>
+
+    <section class="panel active" id="panel-incidents">
+      <div class="panel-head">
+        <h2>当前活跃事件</h2>
+        <p>按告警规则聚合后的事件视图，与推送到飞书/钉钉/企微的内容一致。</p>
+      </div>
+      <div id="incidentList"></div>
+      <div class="empty" id="incidentEmpty" hidden>暂无活跃事件</div>
     </section>
 
     <section class="panel" id="panel-mutes">

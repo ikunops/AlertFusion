@@ -1,6 +1,12 @@
 server:
   port: 8088
 
+# API 访问令牌。留空则不鉴权（开放，适用于内网隔离部署）。
+# 配置后，所有控制台与管控 API（除 Alertmanager webhook 外）需携带
+# Authorization: Bearer <token> 或 ?token=<token>
+api:
+  token: ""
+
 # 屏蔽规则持久化路径（支持按时间段屏蔽）
 mute:
   store_path: data/mutes.json

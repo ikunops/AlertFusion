@@ -113,3 +113,13 @@ func IsPrometheusTargetAlert(a Alert) bool {
 		return false
 	}
 }
+
+// FirstNonEmpty returns the first non-empty string from values.
+func FirstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}

@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -162,17 +164,18 @@ func TestCooldownPerAlertName(t *testing.T) {
 	cfg.Aggregation.MaxWait = config.Duration{Duration: 200 * time.Millisecond}
 	cfg.Notification.Cooldown = config.Duration{Duration: time.Hour}
 
-	var sent int
-	stub := notifierStub(func(msg alert.Message) error { sent++; return nil })
+	var sent int64
+	stub := notifierStub(func(msg alert.Message) error { atomic.AddInt64(&sent, 1); return nil })
 	agg := NewAggregator(cfg, []notifier.Notifier{stub}, nil)
+	defer agg.Stop()
 
-	agg.Ingest([]alert.Alert{
+	agg.Ingest(context.Background(), []alert.Alert{
 		{Status: "firing", Fingerprint: "1", Labels: map[string]string{"alertname": "ProbeFailed", "job": "blackbox_http_get_2xx", "instance": "https://a.com", "severity": "critical"}},
 		{Status: "firing", Fingerprint: "2", Labels: map[string]string{"alertname": "ProbeFailed", "job": "blackbox_http_get_2xx", "instance": "https://b.com", "severity": "critical"}},
 	})
 	time.Sleep(60 * time.Millisecond)
-	if sent != 1 {
-		t.Fatalf("want 1 ProbeFailed notify, got %d", sent)
+	if got := atomic.LoadInt64(&sent); got != 1 {
+		t.Fatalf("want 1 ProbeFailed notify, got %d", got)
 	}
 }
 

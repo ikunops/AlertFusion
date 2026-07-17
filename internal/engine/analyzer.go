@@ -66,7 +66,7 @@ func (an *Analyzer) analyzeByAlertName(alertname string, alerts []alert.Alert, n
 		job = alerts[0].Job()
 	}
 	if alertname == "_unknown" {
-		source = firstNonEmpty(job, "unknown")
+		source = alert.FirstNonEmpty(job, "unknown")
 		title = "未命名告警"
 	}
 
@@ -81,9 +81,13 @@ func (an *Analyzer) analyzeByAlertName(alertname string, alerts []alert.Alert, n
 		sev = "critical"
 	}
 
-	if isProbeAlertName(alertname) || looksLikeProbeGroup(alerts) {
+	isProbe := isProbeAlertName(alertname) || looksLikeProbeGroup(alerts)
+	if isProbe {
 		if len(targets) > 1 {
+			incType = alert.IncidentBlackboxMulti
 			title = title + "（多目标）"
+		} else {
+			incType = alert.IncidentBlackboxSingle
 		}
 	}
 
@@ -265,15 +269,6 @@ func appendUnique(list []string, item string) []string {
 		}
 	}
 	return append(list, item)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func max(a, b int) int {

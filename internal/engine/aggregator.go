@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"log"
 	"sort"
 	"strings"
@@ -36,6 +37,12 @@ const maxHistory = 200
 
 // Aggregator keeps a live view of firing alerts and only notifies when the
 // aggregated picture for a rule (alertname / blackbox) changes.
+//
+// Concurrency model: every state-mutating operation is dispatched as a command
+// onto a channel and executed serially inside a single worker goroutine. This
+// removes all data races — there is never more than one goroutine touching
+// a.active / a.buffer / a.lastByRule / a.history at a time. Read-only snapshots
+// are served from a lock-protected copy produced by the worker.
 type Aggregator struct {
 	cfg       *config.Config
 	analyzer  *Analyzer
@@ -44,61 +51,205 @@ type Aggregator struct {
 	renderer  *template.Renderer
 	mutes     *mute.Store
 
-	mu sync.Mutex
+	cmdCh chan command
+	done  chan struct{}
 
-	active map[string]alert.Alert
+	// snapMu protects the read-only Snapshot served to HTTP handlers.
+	snapMu sync.RWMutex
+	snap   Snapshot
 
-	buffer          []alert.Alert
-	pendingResolved []alert.Alert
-	timer           *time.Timer
-	maxTimer        *time.Timer
-	started         bool
-	windowAt        time.Time
+	// histMu protects the read-only history copy served to HTTP handlers.
+	histMu   sync.RWMutex
+	histCopy []HistoryEvent
 
-	// per-rule cooldown: "rule:HostOomKillDetected"
-	lastByRule map[string]*ruleState
+	// incMu protects the read-only incident copy served to HTTP handlers.
+	incMu    sync.RWMutex
+	incCopy []IncidentView
+}
 
-	history []HistoryEvent
-	stats   Stats
+// IncidentView is a UI-friendly aggregated incident row.
+type IncidentView struct {
+	Type       string   `json:"type"`
+	Title      string   `json:"title"`
+	Severity   string   `json:"severity"`
+	Source     string   `json:"source"`
+	Job        string   `json:"job"`
+	Domains    []string `json:"domains,omitempty"`
+	Anomalies  []string `json:"anomalies,omitempty"`
+	Attached   []string `json:"attached,omitempty"`
+	Count      int      `json:"count"`
+	Suggestion string   `json:"suggestion,omitempty"`
+	Possible   []string `json:"possible,omitempty"`
+	FiredAt    time.Time `json:"fired_at"`
+	Resolved   bool     `json:"resolved"`
+	Status     string   `json:"status"` // firing / muted / suppressed / notified
+	Targets    []string `json:"targets,omitempty"`
+	AlertName  string   `json:"alertname"`
+	MuteReason string   `json:"mute_reason,omitempty"`
 }
 
 // Stats are runtime counters for the dashboard.
 type Stats struct {
-	ReceivedTotal  int64 `json:"received_total"`
-	NotifiedTotal  int64 `json:"notified_total"`
-	MutedTotal     int64 `json:"muted_total"`
+	ReceivedTotal   int64 `json:"received_total"`
+	NotifiedTotal   int64 `json:"notified_total"`
+	MutedTotal      int64 `json:"muted_total"`
 	SuppressedTotal int64 `json:"suppressed_total"`
-	RecoveredTotal int64 `json:"recovered_total"`
+	RecoveredTotal  int64 `json:"recovered_total"`
 }
 
 func NewAggregator(cfg *config.Config, notifiers []notifier.Notifier, mutes *mute.Store) *Aggregator {
-	return &Aggregator{
-		cfg:             cfg,
-		analyzer:        NewAnalyzer(cfg),
-		severity:        NewSeverityEngine(cfg),
-		notifiers:       notifiers,
-		renderer:        template.NewRenderer(cfg.Notification.Cluster, cfg.Notification.MaxItems),
-		mutes:           mutes,
-		active:          make(map[string]alert.Alert),
-		buffer:          make([]alert.Alert, 0),
-		pendingResolved: make([]alert.Alert, 0),
-		lastByRule:      make(map[string]*ruleState),
-		history:         make([]HistoryEvent, 0, 64),
+	a := &Aggregator{
+		cfg:       cfg,
+		analyzer:  NewAnalyzer(cfg),
+		severity:  NewSeverityEngine(cfg),
+		notifiers: notifiers,
+		renderer:  template.NewRenderer(cfg.Notification.Cluster, cfg.Notification.MaxItems),
+		mutes:     mutes,
+		cmdCh:     make(chan command, 256),
+		done:      make(chan struct{}),
+	}
+	a.snap = Snapshot{
+		Cluster:   cfg.Notification.Cluster,
+		Cooldown:  a.cooldown().String(),
+		Notifiers: a.notifierNames(),
+	}
+	go a.worker()
+	return a
+}
+
+// command is a unit of work executed serially by the worker goroutine.
+type command struct {
+	kind    cmdKind
+	alerts  []alert.Alert
+	notif   config.NotificationConfig
+	resultC chan<- applyResult
+	flushC  chan<- struct{}
+}
+
+type cmdKind int
+
+const (
+	cmdIngest cmdKind = iota
+	cmdFlushNow
+	cmdApplyNotification
+)
+
+type applyResult struct {
+	names []string
+}
+
+// ---- Worker: the only goroutine that touches live state ----
+
+func (a *Aggregator) worker() {
+	active := make(map[string]alert.Alert)
+	var buffer []alert.Alert
+	var pendingResolved []alert.Alert
+	var timer, maxTimer *time.Timer
+	started := false
+	var windowAt time.Time
+	lastByRule := make(map[string]*ruleState)
+	stats := Stats{}
+
+	for cmd := range a.cmdCh {
+		switch cmd.kind {
+		case cmdIngest:
+			a.ingestLocked(&state{
+				active: &active, buffer: &buffer, pendingResolved: &pendingResolved,
+				timer: &timer, maxTimer: &maxTimer, started: &started, windowAt: &windowAt,
+				lastByRule: &lastByRule, stats: &stats,
+			}, time.Now(), cmd.alerts)
+		case cmdFlushNow:
+			a.flushLocked(&state{
+				active: &active, buffer: &buffer, pendingResolved: &pendingResolved,
+				timer: &timer, maxTimer: &maxTimer, started: &started, windowAt: &windowAt,
+				lastByRule: &lastByRule, stats: &stats,
+			})
+			if cmd.flushC != nil {
+				close(cmd.flushC)
+			}
+		case cmdApplyNotification:
+			a.cfg.Notification = cmd.notif
+			a.renderer = template.NewRenderer(cmd.notif.Cluster, cmd.notif.MaxItems)
+			a.notifiers = notifier.BuildNotifiers(a.cfg)
+			cmd.resultC <- applyResult{names: a.notifierNames()}
+		}
+		a.publishSnapshot(&state{
+			active: &active, buffer: &buffer, pendingResolved: &pendingResolved,
+			started: &started, windowAt: &windowAt,
+			lastByRule: &lastByRule, stats: &stats,
+		})
+	}
+	close(a.done)
+}
+
+// state bundles all live fields so helper methods share one source of truth.
+type state struct {
+	active          *map[string]alert.Alert
+	buffer          *[]alert.Alert
+	pendingResolved *[]alert.Alert
+	timer           **time.Timer
+	maxTimer        **time.Timer
+	started         *bool
+	windowAt        *time.Time
+	lastByRule      *map[string]*ruleState
+	stats           *Stats
+}
+
+// ---- Public API: dispatch commands to the worker ----
+
+func (a *Aggregator) Ingest(ctx context.Context, alerts []alert.Alert) error {
+	select {
+	case a.cmdCh <- command{kind: cmdIngest, alerts: alerts}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
+// FlushNow forces a flush and blocks until the worker has processed it.
+func (a *Aggregator) FlushNow() {
+	flushC := make(chan struct{})
+	a.cmdCh <- command{kind: cmdFlushNow, flushC: flushC}
+	<-flushC
+}
+
+// ApplyNotification updates runtime notification settings and rebuilds notifiers.
+func (a *Aggregator) ApplyNotification(n config.NotificationConfig) []string {
+	resultC := make(chan applyResult, 1)
+	a.cmdCh <- command{kind: cmdApplyNotification, notif: n, resultC: resultC}
+	res := <-resultC
+	return res.names
+}
+
+// Stop terminates the worker goroutine.
+func (a *Aggregator) Stop() {
+	close(a.cmdCh)
+	<-a.done
+}
+
+func (a *Aggregator) notifierNames() []string {
+	names := make([]string, 0, len(a.notifiers))
+	for _, n := range a.notifiers {
+		names = append(names, n.Name())
+	}
+	return names
+}
+
+// ---- Snapshot / read API ----
+
 // Snapshot for the UI.
 type Snapshot struct {
-	ActiveCount   int           `json:"active_count"`
-	BufferCount   int           `json:"buffer_count"`
-	WindowOpen    bool          `json:"window_open"`
-	WindowAt      *time.Time    `json:"window_at,omitempty"`
-	MuteActive    int           `json:"mute_active"`
-	Cooldown      string        `json:"cooldown"`
-	Cluster       string        `json:"cluster"`
-	Stats         Stats         `json:"stats"`
-	Notifiers     []string      `json:"notifiers"`
-	ActiveAlerts  []AlertView   `json:"active_alerts"`
+	ActiveCount  int          `json:"active_count"`
+	IncidentCount int         `json:"incident_count"`
+	BufferCount  int          `json:"buffer_count"`
+	WindowOpen   bool         `json:"window_open"`
+	WindowAt     *time.Time   `json:"window_at,omitempty"`
+	MuteActive   int          `json:"mute_active"`
+	Cooldown     string       `json:"cooldown"`
+	Cluster      string       `json:"cluster"`
+	Stats        Stats        `json:"stats"`
+	Notifiers    []string     `json:"notifiers"`
+	ActiveAlerts []AlertView  `json:"active_alerts"`
 }
 
 // AlertView is a UI-friendly alert row.
@@ -119,12 +270,15 @@ type AlertView struct {
 	Value       string            `json:"value"`
 }
 
-func (a *Aggregator) Snapshot() Snapshot {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+func (a *Aggregator) publishSnapshot(s *state) {
+	active := *s.active
+	muteActive := 0
+	if a.mutes != nil {
+		muteActive = a.mutes.CountActive()
+	}
 
-	active := make([]AlertView, 0, len(a.active))
-	for _, al := range a.active {
+	views := make([]AlertView, 0, len(active))
+	for _, al := range active {
 		view := AlertView{
 			Fingerprint: al.Fingerprint,
 			Status:      al.Status,
@@ -145,90 +299,138 @@ func (a *Aggregator) Snapshot() Snapshot {
 				view.MuteID = m.ID
 			}
 		}
-		active = append(active, view)
+		views = append(views, view)
 	}
-	sort.Slice(active, func(i, j int) bool {
-		if active[i].AlertName != active[j].AlertName {
-			return active[i].AlertName < active[j].AlertName
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].AlertName != views[j].AlertName {
+			return views[i].AlertName < views[j].AlertName
 		}
-		return active[i].Instance < active[j].Instance
+		return views[i].Instance < views[j].Instance
 	})
 
-	names := make([]string, 0, len(a.notifiers))
-	for _, n := range a.notifiers {
-		names = append(names, n.Name())
-	}
-
 	var windowAt *time.Time
-	if a.started {
-		t := a.windowAt
+	if *s.started {
+		t := *s.windowAt
 		windowAt = &t
 	}
-	muteActive := 0
-	if a.mutes != nil {
-		muteActive = a.mutes.CountActive()
-	}
 
-	return Snapshot{
-		ActiveCount:  len(a.active),
-		BufferCount:  len(a.buffer),
-		WindowOpen:   a.started,
+	a.incMu.RLock()
+	incCount := len(a.incCopy)
+	a.incMu.RUnlock()
+
+	snap := Snapshot{
+		ActiveCount:   len(active),
+		IncidentCount: incCount,
+		BufferCount:   len(*s.buffer),
+		WindowOpen:   *s.started,
 		WindowAt:     windowAt,
 		MuteActive:   muteActive,
 		Cooldown:     a.cooldown().String(),
 		Cluster:      a.cfg.Notification.Cluster,
-		Stats:        a.stats,
-		Notifiers:    names,
-		ActiveAlerts: active,
+		Stats:        *s.stats,
+		Notifiers:    a.notifierNames(),
+		ActiveAlerts: views,
 	}
+
+	a.snapMu.Lock()
+	a.snap = snap
+	a.snapMu.Unlock()
+}
+
+func (a *Aggregator) Snapshot() Snapshot {
+	a.snapMu.RLock()
+	defer a.snapMu.RUnlock()
+	return a.snap
 }
 
 func (a *Aggregator) History(limit int) []HistoryEvent {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if limit <= 0 || limit > len(a.history) {
-		limit = len(a.history)
+	a.histMu.RLock()
+	hist := append([]HistoryEvent(nil), a.histCopy...)
+	a.histMu.RUnlock()
+	if limit <= 0 || limit > len(hist) {
+		limit = len(hist)
 	}
 	out := make([]HistoryEvent, limit)
-	// newest first
 	for i := 0; i < limit; i++ {
-		out[i] = a.history[len(a.history)-1-i]
+		out[i] = hist[len(hist)-1-i]
 	}
 	return out
 }
 
-func (a *Aggregator) pushHistoryLocked(ev HistoryEvent) {
+func (a *Aggregator) pushHistoryCopy(ev HistoryEvent) {
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
-	a.history = append(a.history, ev)
-	if len(a.history) > maxHistory {
-		a.history = a.history[len(a.history)-maxHistory:]
+	a.histMu.Lock()
+	a.histCopy = append(a.histCopy, ev)
+	if len(a.histCopy) > maxHistory {
+		a.histCopy = a.histCopy[len(a.histCopy)-maxHistory:]
+	}
+	a.histMu.Unlock()
+}
+
+func (a *Aggregator) pushIncidentsCopy(views []IncidentView) {
+	a.incMu.Lock()
+	if views == nil {
+		views = []IncidentView{}
+	}
+	a.incCopy = views
+	a.incMu.Unlock()
+}
+
+func (a *Aggregator) Incidents() []IncidentView {
+	a.incMu.RLock()
+	out := append([]IncidentView(nil), a.incCopy...)
+	a.incMu.RUnlock()
+	return out
+}
+
+func (a *Aggregator) syncResolvedIncidents(s *state) {
+	// Keep existing incidents if active map still has alerts,
+	// otherwise publish empty list.
+	if len(*s.active) == 0 {
+		a.pushIncidentsCopy(nil)
 	}
 }
 
-// ApplyNotification updates runtime notification settings and rebuilds notifiers.
-func (a *Aggregator) ApplyNotification(n config.NotificationConfig) []string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg.Notification = n
-	a.renderer = template.NewRenderer(n.Cluster, n.MaxItems)
-	a.notifiers = notifier.BuildNotifiers(a.cfg)
-	names := make([]string, 0, len(a.notifiers))
-	for _, ntf := range a.notifiers {
-		names = append(names, ntf.Name())
+func makeIncidentView(inc *alert.Incident, targets []string, status, muteReason string) IncidentView {
+	return IncidentView{
+		Type:       string(inc.Type),
+		Title:      inc.Title,
+		Severity:   inc.Severity,
+		Source:     inc.Source,
+		Job:        inc.Job,
+		Domains:    inc.Domains,
+		Anomalies:  inc.Anomalies,
+		Attached:   inc.Attached,
+		Count:      inc.Count,
+		Suggestion: inc.Suggestion,
+		Possible:   inc.Possible,
+		FiredAt:    inc.FiredAt,
+		Resolved:   inc.Resolved,
+		Status:     status,
+		Targets:    targets,
+		AlertName:  alert.FirstNonEmpty(inc.Source, inc.Title),
+		MuteReason: muteReason,
 	}
-	return names
 }
 
-func (a *Aggregator) Ingest(alerts []alert.Alert) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+func muteReason(m *mute.Rule) string {
+	if m == nil {
+		return ""
+	}
+	return m.Reason
+}
 
+// ---- Live-state operations (worker only) ----
+
+func (a *Aggregator) ingestLocked(s *state, now time.Time, alerts []alert.Alert) {
+	if len(alerts) == 0 {
+		return
+	}
 	cooldown := a.cooldown()
-	now := time.Now()
-	a.purgeRuleStateLocked(now, cooldown)
-	a.stats.ReceivedTotal += int64(len(alerts))
+	a.purgeRuleStateLocked(s, now, cooldown)
+	s.stats.ReceivedTotal += int64(len(alerts))
 
 	var (
 		firing         []alert.Alert
@@ -239,15 +441,15 @@ func (a *Aggregator) Ingest(alerts []alert.Alert) {
 	for _, al := range alerts {
 		key := alertDedupeKey(al)
 		if !al.IsFiring() {
-			delete(a.active, key)
+			delete(*s.active, key)
 			resolvedAlerts = append(resolvedAlerts, al)
 			continue
 		}
 		firing = append(firing, al)
-		if _, existed := a.active[key]; !existed {
+		if _, existed := (*s.active)[key]; !existed {
 			newKeys++
 		}
-		a.active[key] = al
+		(*s.active)[key] = al
 	}
 
 	needFlush := false
@@ -255,44 +457,41 @@ func (a *Aggregator) Ingest(alerts []alert.Alert) {
 	if len(resolvedAlerts) > 0 {
 		log.Printf("aggregator: recv resolved=%d rules=%v", len(resolvedAlerts), summarizeRules(resolvedAlerts))
 		if a.cfg.Notification.SendResolved {
-			a.pendingResolved = append(a.pendingResolved, resolvedAlerts...)
+			*s.pendingResolved = append(*s.pendingResolved, resolvedAlerts...)
 			needFlush = true
 		}
 	}
 
 	if len(firing) > 0 {
 		log.Printf("aggregator: recv firing=%d new_keys=%d active_total=%d rules=%v",
-			len(firing), newKeys, len(a.active), summarizeRules(firing))
+			len(firing), newKeys, len(*s.active), summarizeRules(firing))
 
-		if a.shouldIgnoreLocked(firing, now, cooldown) {
+		if a.shouldIgnoreLocked(s, firing, now, cooldown) {
 			log.Printf("aggregator: IGNORE repeat firing webhook (cooldown=%s)", cooldown)
 		} else {
-			a.buffer = append(a.buffer, firing...)
+			*s.buffer = append(*s.buffer, firing...)
 			needFlush = true
 		}
 	}
 
 	if !needFlush {
-		if len(firing) == 0 && len(resolvedAlerts) == 0 {
-			log.Printf("aggregator: nothing to process")
-		}
 		return
 	}
-	a.scheduleFlushLocked(now)
+	a.scheduleFlushLocked(s, now)
 }
 
-func (a *Aggregator) shouldIgnoreLocked(firing []alert.Alert, now time.Time, cooldown time.Duration) bool {
-	// Group incoming by rule key; ignore only if EVERY rule has no new targets.
+func (a *Aggregator) shouldIgnoreLocked(s *state, firing []alert.Alert, now time.Time, cooldown time.Duration) bool {
 	byRule := map[string][]string{}
 	byRuleKeys := map[string][]string{}
 	for _, al := range firing {
 		rk := ruleKeyOfAlert(al)
-		byRule[rk] = appendUniqueMany(byRule[rk], siteOf(al))
+		target := affectedTarget(al)
+		byRule[rk] = appendUniqueMany(byRule[rk], target)
 		byRuleKeys[rk] = append(byRuleKeys[rk], alertDedupeKey(al))
 	}
 
 	for rk, targets := range byRule {
-		st := a.lastByRule[rk]
+		st := (*s.lastByRule)[rk]
 		if st == nil || now.Sub(st.sentAt) >= cooldown {
 			return false
 		}
@@ -303,12 +502,11 @@ func (a *Aggregator) shouldIgnoreLocked(firing []alert.Alert, now time.Time, coo
 			if _, ok := st.keys[k]; ok {
 				continue
 			}
-			// new fingerprint but same target → still ignore
-			site := ""
-			if al, ok := a.active[k]; ok {
-				site = siteOf(al)
+			target := ""
+			if al, ok := (*s.active)[k]; ok {
+				target = affectedTarget(al)
 			}
-			if site == "" || !containsString(st.targets, site) {
+			if target == "" || !containsString(st.targets, target) {
 				return false
 			}
 		}
@@ -316,7 +514,7 @@ func (a *Aggregator) shouldIgnoreLocked(firing []alert.Alert, now time.Time, coo
 	return true
 }
 
-func (a *Aggregator) scheduleFlushLocked(now time.Time) {
+func (a *Aggregator) scheduleFlushLocked(s *state, now time.Time) {
 	wait := a.cfg.Aggregation.WaitTime.Duration
 	if wait <= 0 {
 		wait = 30 * time.Second
@@ -326,48 +524,53 @@ func (a *Aggregator) scheduleFlushLocked(now time.Time) {
 		maxWait = 3 * wait
 	}
 
-	if !a.started {
-		a.started = true
-		a.windowAt = now
-		a.maxTimer = time.AfterFunc(maxWait, a.flush)
+	if !*s.started {
+		*s.started = true
+		*s.windowAt = now
+		*s.maxTimer = time.AfterFunc(maxWait, a.flushFromTimer)
 		log.Printf("aggregator: window opened idle=%s max_wait=%s", wait, maxWait)
-	} else if a.timer != nil {
-		a.timer.Stop()
+	} else if *s.timer != nil {
+		(*s.timer).Stop()
 		log.Printf("aggregator: debounce reset idle=%s buffer=%d active=%d",
-			wait, len(a.buffer), len(a.active))
+			wait, len(*s.buffer), len(*s.active))
 	}
-	a.timer = time.AfterFunc(wait, a.flush)
+	*s.timer = time.AfterFunc(wait, a.flushFromTimer)
 }
 
-func (a *Aggregator) flush() {
-	a.mu.Lock()
-	if a.timer != nil {
-		a.timer.Stop()
-		a.timer = nil
-	}
-	if a.maxTimer != nil {
-		a.maxTimer.Stop()
-		a.maxTimer = nil
-	}
-	a.started = false
-	a.buffer = nil
+// flushFromTimer is called by the timers; it dispatches a flush command so the
+// worker performs the flush under its own (single) goroutine.
+func (a *Aggregator) flushFromTimer() {
+	a.cmdCh <- command{kind: cmdFlushNow}
+}
 
-	batch := make([]alert.Alert, 0, len(a.active))
-	for _, al := range a.active {
+func (a *Aggregator) flushLocked(s *state) {
+	if *s.timer != nil {
+		(*s.timer).Stop()
+		*s.timer = nil
+	}
+	if *s.maxTimer != nil {
+		(*s.maxTimer).Stop()
+		*s.maxTimer = nil
+	}
+	*s.started = false
+	*s.buffer = nil
+
+	batch := make([]alert.Alert, 0, len(*s.active))
+	for _, al := range *s.active {
 		batch = append(batch, al)
 	}
-	resolvedBatch := dedupeAlerts(a.pendingResolved)
-	a.pendingResolved = nil
+	resolvedBatch := dedupeAlerts(*s.pendingResolved)
+	*s.pendingResolved = nil
 	cooldown := a.cooldown()
-	a.mu.Unlock()
 
 	// 1) Recovery notifications first (resolved webhooks).
 	if len(resolvedBatch) > 0 && a.cfg.Notification.SendResolved {
-		a.flushResolved(resolvedBatch)
+		a.flushResolvedLocked(s, resolvedBatch)
 	}
 
 	if len(batch) == 0 {
 		log.Printf("aggregator: flush skipped firing, no active alerts")
+		a.syncResolvedIncidents(s)
 		return
 	}
 
@@ -377,6 +580,8 @@ func (a *Aggregator) flush() {
 	incidents := a.analyzer.Analyze(batch)
 	log.Printf("aggregator: produced %d firing incident(s)", len(incidents))
 
+	incidentViews := make([]IncidentView, 0, len(incidents))
+
 	for i := range incidents {
 		inc := &incidents[i]
 		inc.Severity = a.severity.Elevate(*inc)
@@ -384,37 +589,33 @@ func (a *Aggregator) flush() {
 		rk := ruleKeyOfIncident(*inc)
 		targets := targetsOfIncident(*inc)
 
-		if a.mutes != nil {
-			if m := a.mutes.MatchIncident(inc.Alerts, firstNonEmpty(inc.Source, inc.Status, inc.Title)); m != nil {
-				log.Printf("aggregator: MUTED firing rule=%s mute=%s reason=%q targets=%v", rk, m.ID, m.Reason, targets)
-				a.mu.Lock()
-				a.stats.MutedTotal++
-				a.pushHistoryLocked(HistoryEvent{
-					Action:    "muted",
-					AlertName: firstNonEmpty(inc.Source, inc.Title),
-					Severity:  inc.Severity,
-					Count:     inc.Count,
-					Targets:   targets,
-					Detail:    "屏蔽规则 " + m.ID + ": " + m.Reason,
-				})
-				a.mu.Unlock()
-				continue
-			}
+		if muted, m := a.mutesMatch(*inc); muted {
+			log.Printf("aggregator: MUTED firing rule=%s mute=%s reason=%q targets=%v", rk, m.ID, m.Reason, targets)
+			s.stats.MutedTotal++
+			a.pushHistoryCopy(HistoryEvent{
+				Action:    "muted",
+				AlertName: alert.FirstNonEmpty(inc.Source, inc.Title),
+				Severity:  inc.Severity,
+				Count:     inc.Count,
+				Targets:   targets,
+				Detail:    "屏蔽规则 " + m.ID + ": " + m.Reason,
+			})
+			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "muted", m.Reason))
+			continue
 		}
 
-		if a.shouldSuppressIncident(rk, targets, cooldown) {
+		if a.shouldSuppressIncidentLocked(s, rk, targets, cooldown) {
 			log.Printf("aggregator: SUPPRESS firing rule=%s targets=%v", rk, targets)
-			a.mu.Lock()
-			a.stats.SuppressedTotal++
-			a.pushHistoryLocked(HistoryEvent{
+			s.stats.SuppressedTotal++
+			a.pushHistoryCopy(HistoryEvent{
 				Action:    "suppressed",
-				AlertName: firstNonEmpty(inc.Source, inc.Title),
+				AlertName: alert.FirstNonEmpty(inc.Source, inc.Title),
 				Severity:  inc.Severity,
 				Count:     inc.Count,
 				Targets:   targets,
 				Detail:    "cooldown " + cooldown.String(),
 			})
-			a.mu.Unlock()
+			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "suppressed", ""))
 			continue
 		}
 
@@ -424,30 +625,65 @@ func (a *Aggregator) flush() {
 		msg := a.renderer.Render(*inc)
 		log.Printf("aggregator: message[%d]:\n----------\n%s\n----------", i, msg.RawText)
 		if a.dispatch(msg) {
-			a.markRuleNotified(rk, *inc, targets)
-			a.mu.Lock()
-			a.stats.NotifiedTotal++
-			a.pushHistoryLocked(HistoryEvent{
+			a.markRuleNotifiedLocked(s, rk, *inc, targets)
+			s.stats.NotifiedTotal++
+			a.pushHistoryCopy(HistoryEvent{
 				Action:    "notified",
-				AlertName: firstNonEmpty(inc.Source, inc.Title),
+				AlertName: alert.FirstNonEmpty(inc.Source, inc.Title),
 				Severity:  inc.Severity,
 				Count:     inc.Count,
 				Targets:   targets,
 			})
-			a.mu.Unlock()
+			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "notified", ""))
+		} else {
+			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "firing", ""))
 		}
+	}
+
+	if len(incidentViews) > 0 || len(*s.active) > 0 {
+		a.pushIncidentsCopy(incidentViews)
 	}
 }
 
-func (a *Aggregator) flushResolved(resolved []alert.Alert) {
-	// Only notify recovery for rules we previously alerted on.
+// mutesMatch returns whether the whole incident is covered by a single mute rule.
+// An incident is considered muted only if EVERY alert in it matches the same rule.
+func (a *Aggregator) mutesMatch(inc alert.Incident) (bool, *mute.Rule) {
+	if a.mutes == nil {
+		return false, nil
+	}
+	if len(inc.Alerts) == 0 {
+		if m := a.mutes.Match(alert.Alert{Labels: map[string]string{"alertname": inc.Source}}); m != nil {
+			return true, m
+		}
+		return false, nil
+	}
+	var covering *mute.Rule
+	for _, al := range inc.Alerts {
+		m := a.mutes.Match(al)
+		if m == nil {
+			// One alert not covered -> the whole incident is NOT muted.
+			return false, nil
+		}
+		if covering == nil {
+			cp := *m
+			covering = &cp
+		}
+	}
+	if covering == nil {
+		// Fallback: alertname-level rule via MatchIncident.
+		if m := a.mutes.MatchIncident(inc.Alerts, alert.FirstNonEmpty(inc.Source, inc.Status, inc.Title)); m != nil {
+			return true, m
+		}
+		return false, nil
+	}
+	return true, covering
+}
+
+func (a *Aggregator) flushResolvedLocked(s *state, resolved []alert.Alert) {
 	groups := map[string][]alert.Alert{}
 	for _, al := range resolved {
 		rk := ruleKeyOfAlert(al)
-		a.mu.Lock()
-		_, notified := a.lastByRule[rk]
-		a.mu.Unlock()
-		if !notified {
+		if _, notified := (*s.lastByRule)[rk]; !notified {
 			log.Printf("aggregator: skip recovery for %s (never notified firing)", rk)
 			continue
 		}
@@ -457,12 +693,13 @@ func (a *Aggregator) flushResolved(resolved []alert.Alert) {
 		return
 	}
 
-	now := time.Now()
 	keys := make([]string, 0, len(groups))
 	for k := range groups {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+
+	var resolvedViews []IncidentView
 
 	for _, rk := range keys {
 		batch := groups[rk]
@@ -475,47 +712,44 @@ func (a *Aggregator) flushResolved(resolved []alert.Alert) {
 			log.Printf("aggregator: RECOVERY rule=%s source=%s count=%d targets=%v",
 				rk, inc.Source, inc.Count, targets)
 
-			if a.mutes != nil {
-				if m := a.mutes.MatchIncident(inc.Alerts, firstNonEmpty(inc.Source, inc.Status, inc.Title)); m != nil {
-					log.Printf("aggregator: MUTED recovery rule=%s mute=%s", rk, m.ID)
-					a.clearRecoveredTargets(rk, batch, targets)
-					continue
-				}
+			if muted, m := a.mutesMatch(*inc); muted {
+				log.Printf("aggregator: MUTED recovery rule=%s", rk)
+				a.clearRecoveredTargetsLocked(s, rk, batch, targets)
+				resolvedViews = append(resolvedViews, makeIncidentView(inc, targets, "muted", m.Reason))
+				continue
 			}
 
 			msg := a.renderer.Render(*inc)
 			log.Printf("aggregator: recovery message:\n----------\n%s\n----------", msg.RawText)
 			if a.dispatch(msg) {
-				a.clearRecoveredTargets(rk, batch, targets)
-				a.mu.Lock()
-				a.stats.RecoveredTotal++
-				a.pushHistoryLocked(HistoryEvent{
+				a.clearRecoveredTargetsLocked(s, rk, batch, targets)
+				s.stats.RecoveredTotal++
+				a.pushHistoryCopy(HistoryEvent{
 					Action:    "recovered",
-					AlertName: firstNonEmpty(inc.Source, inc.Title),
+					AlertName: alert.FirstNonEmpty(inc.Source, inc.Title),
 					Severity:  inc.Severity,
 					Count:     inc.Count,
 					Targets:   targets,
 					Resolved:  true,
 				})
-				a.mu.Unlock()
+				resolvedViews = append(resolvedViews, makeIncidentView(inc, targets, "resolved", ""))
 			}
 		}
 	}
-	_ = now
+
+	if len(resolvedViews) > 0 {
+		a.pushIncidentsCopy(resolvedViews)
+	}
 }
 
-func (a *Aggregator) clearRecoveredTargets(rk string, batch []alert.Alert, targets []string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	st := a.lastByRule[rk]
+func (a *Aggregator) clearRecoveredTargetsLocked(s *state, rk string, batch []alert.Alert, targets []string) {
+	st := (*s.lastByRule)[rk]
 	if st == nil {
 		return
 	}
-	// Remove recovered alert keys.
 	for _, al := range batch {
 		delete(st.keys, alertDedupeKey(al))
 	}
-	// Remove recovered targets from cooldown set.
 	remain := make([]string, 0, len(st.targets))
 	remove := map[string]bool{}
 	for _, t := range targets {
@@ -528,17 +762,15 @@ func (a *Aggregator) clearRecoveredTargets(rk string, batch []alert.Alert, targe
 	}
 	st.targets = remain
 	if len(st.targets) == 0 && len(st.keys) == 0 {
-		delete(a.lastByRule, rk)
+		delete(*s.lastByRule, rk)
 		log.Printf("aggregator: cleared rule state %s after full recovery", rk)
 	} else {
 		log.Printf("aggregator: partial recovery rule=%s remain_targets=%v", rk, st.targets)
 	}
 }
 
-func (a *Aggregator) shouldSuppressIncident(rk string, targets []string, cooldown time.Duration) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	st := a.lastByRule[rk]
+func (a *Aggregator) shouldSuppressIncidentLocked(s *state, rk string, targets []string, cooldown time.Duration) bool {
+	st := (*s.lastByRule)[rk]
 	if st == nil {
 		return false
 	}
@@ -548,14 +780,12 @@ func (a *Aggregator) shouldSuppressIncident(rk string, targets []string, cooldow
 	return isSubset(targets, st.targets)
 }
 
-func (a *Aggregator) markRuleNotified(rk string, inc alert.Incident, targets []string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+func (a *Aggregator) markRuleNotifiedLocked(s *state, rk string, inc alert.Incident, targets []string) {
 	now := time.Now()
-	st := a.lastByRule[rk]
+	st := (*s.lastByRule)[rk]
 	if st == nil {
 		st = &ruleState{keys: make(map[string]time.Time)}
-		a.lastByRule[rk] = st
+		(*s.lastByRule)[rk] = st
 	}
 	st.sentAt = now
 	st.targets = unionStrings(st.targets, targets)
@@ -567,10 +797,7 @@ func (a *Aggregator) markRuleNotified(rk string, inc alert.Incident, targets []s
 }
 
 func (a *Aggregator) dispatch(msg alert.Message) bool {
-	a.mu.Lock()
 	ns := append([]notifier.Notifier(nil), a.notifiers...)
-	a.mu.Unlock()
-
 	if len(ns) == 0 {
 		log.Printf("aggregator: no notifiers enabled, message logged only")
 		return true
@@ -588,21 +815,6 @@ func (a *Aggregator) dispatch(msg alert.Message) bool {
 	return ok
 }
 
-func (a *Aggregator) FlushNow() {
-	a.mu.Lock()
-	if a.timer != nil {
-		a.timer.Stop()
-		a.timer = nil
-	}
-	if a.maxTimer != nil {
-		a.maxTimer.Stop()
-		a.maxTimer = nil
-	}
-	a.started = false
-	a.mu.Unlock()
-	a.flush()
-}
-
 func (a *Aggregator) cooldown() time.Duration {
 	d := a.cfg.Notification.Cooldown.Duration
 	if d <= 0 {
@@ -611,10 +823,10 @@ func (a *Aggregator) cooldown() time.Duration {
 	return d
 }
 
-func (a *Aggregator) purgeRuleStateLocked(now time.Time, cooldown time.Duration) {
-	for k, st := range a.lastByRule {
+func (a *Aggregator) purgeRuleStateLocked(s *state, now time.Time, cooldown time.Duration) {
+	for k, st := range *s.lastByRule {
 		if now.Sub(st.sentAt) >= cooldown {
-			delete(a.lastByRule, k)
+			delete(*s.lastByRule, k)
 		}
 	}
 }
@@ -717,14 +929,6 @@ func alertDedupeKey(a alert.Alert) string {
 		a.Labels["target"],
 		a.Labels["url"],
 	}, "|")
-}
-
-func siteOf(a alert.Alert) string {
-	// Cooldown / suppress identity must match machine dedupe.
-	if key := a.MachineKey(); key != "" {
-		return key
-	}
-	return affectedTarget(a)
 }
 
 func isSubset(child, parent []string) bool {

@@ -2,11 +2,13 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -34,10 +36,12 @@ func (r *Receiver) Register(router *gin.Engine) {
 }
 
 func (r *Receiver) HandleAlertmanager(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 10<<20) // 10 MB max
+
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		log.Printf("webhook: read body error: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "read body failed"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request too large or read failed"})
 		return
 	}
 
@@ -56,7 +60,13 @@ func (r *Receiver) HandleAlertmanager(c *gin.Context) {
 			i, a.Status, a.AlertName(), a.Severity(), a.Hostname(), a.Instance(), a.Job(), a.Labels, a.Annotations)
 	}
 
-	r.aggregator.Ingest(alerts)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	if err := r.aggregator.Ingest(ctx, alerts); err != nil {
+		log.Printf("webhook: ingest error: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ingest timeout or cancelled"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"status": "accepted",
 		"count":  len(alerts),

@@ -83,6 +83,7 @@ func main() {
 
 	log.Printf("shutting down, flushing buffered alerts...")
 	aggregator.FlushNow()
+	aggregator.Stop()
 	log.Printf("bye")
 }
 

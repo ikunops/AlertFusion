@@ -17,7 +17,7 @@ func HumanizeAlertName(name string) string {
 		"TargetDown":              "监控目标不可达",
 		"PrometheusTargetMissing": "Prometheus目标缺失",
 		"ProbeFailed":             "探测失败",
-		"ProbeSuccess":            "探测失败",
+		"ProbeSuccess":            "探测成功",
 		"HostMemoryUnderMemoryPressure": "主机内存压力过高",
 		"HostOomKillDetected":           "主机OOM杀进程",
 		"HostOutOfMemory":               "主机内存耗尽",

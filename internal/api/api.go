@@ -33,9 +33,11 @@ func New(cfg *config.Config, configPath, overlayPath string, aggregator *engine.
 
 func (h *Handler) Register(router *gin.Engine) {
 	api := router.Group("/api/v1")
+	api.Use(h.authMiddleware())
 	{
 		api.GET("/dashboard", h.Dashboard)
 		api.GET("/alerts/active", h.ActiveAlerts)
+		api.GET("/incidents", h.Incidents)
 		api.GET("/alerts/history", h.History)
 		api.GET("/mutes", h.ListMutes)
 		api.POST("/mutes", h.CreateMute)
@@ -43,6 +45,25 @@ func (h *Handler) Register(router *gin.Engine) {
 		api.POST("/aggregator/flush", h.Flush)
 		api.GET("/settings/notification", h.GetNotification)
 		api.PUT("/settings/notification", h.UpdateNotification)
+	}
+}
+
+// authMiddleware protects all management/console APIs. When no API token is
+// configured it is a no-op (open, as before). The Alertmanager webhook is
+// registered separately and is never protected by this middleware.
+func (h *Handler) authMiddleware() gin.HandlerFunc {
+	token := strings.TrimSpace(h.cfg.API.Token)
+	if token == "" {
+		return func(c *gin.Context) { c.Next() }
+	}
+	return func(c *gin.Context) {
+		provided := c.GetHeader("Authorization")
+		provided = strings.TrimSpace(strings.TrimPrefix(provided, "Bearer "))
+		if provided != token {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.Next()
 	}
 }
 
@@ -56,6 +77,14 @@ func (h *Handler) ActiveAlerts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"count":  len(snap.ActiveAlerts),
 		"alerts": snap.ActiveAlerts,
+	})
+}
+
+func (h *Handler) Incidents(c *gin.Context) {
+	views := h.aggregator.Incidents()
+	c.JSON(http.StatusOK, gin.H{
+		"count":     len(views),
+		"incidents": views,
 	})
 }
 
