@@ -198,6 +198,17 @@ body {
 }
 .panel-head p { margin: 0; color: var(--ink-soft); }
 
+#panel-history {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 180px);
+}
+#panel-history .timeline {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  max-height: 60vh;
+}
+
 .table-wrap {
   background: rgba(255,255,255,0.82);
   border: 1px solid var(--line);
