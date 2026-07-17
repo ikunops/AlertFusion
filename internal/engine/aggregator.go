@@ -268,6 +268,7 @@ type AlertView struct {
 	MuteID      string            `json:"mute_id,omitempty"`
 	Description string            `json:"description"`
 	Value       string            `json:"value"`
+	GeneratorURL string           `json:"generator_url,omitempty"`
 }
 
 func (a *Aggregator) publishSnapshot(s *state) {
@@ -279,10 +280,6 @@ func (a *Aggregator) publishSnapshot(s *state) {
 
 	views := make([]AlertView, 0, len(active))
 	for _, al := range active {
-		startsAt := al.StartsAt
-		if startsAt.IsZero() {
-			startsAt = time.Now()
-		}
 		view := AlertView{
 			Fingerprint: al.Fingerprint,
 			Status:      al.Status,
@@ -293,9 +290,10 @@ func (a *Aggregator) publishSnapshot(s *state) {
 			Job:         al.Job(),
 			Labels:      al.Labels,
 			Annotations: al.Annotations,
-			StartsAt:    startsAt,
+			StartsAt:    al.StartsAt,
 			Description: al.Description(),
 			Value:       al.Value(),
+			GeneratorURL: al.GeneratorURL,
 		}
 		if a.mutes != nil {
 			if m := a.mutes.Match(al); m != nil {
@@ -452,6 +450,9 @@ func (a *Aggregator) ingestLocked(s *state, now time.Time, alerts []alert.Alert)
 			delete(*s.active, key)
 			resolvedAlerts = append(resolvedAlerts, al)
 			continue
+		}
+		if al.StartsAt.IsZero() {
+			al.StartsAt = time.Now()
 		}
 		firing = append(firing, al)
 		if _, existed := (*s.active)[key]; !existed {

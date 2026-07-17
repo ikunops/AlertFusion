@@ -165,7 +165,9 @@
     empty.hidden = true;
     for (const a of alerts) {
       const tr = document.createElement("tr");
+      tr.className = "alert-row";
       const host = a.hostname || a.instance || "—";
+      const expandId = "exp-" + Math.random().toString(36).slice(2, 8);
       tr.innerHTML = `
         <td><span class="pill ${sevClass(a.severity)}">${a.severity || "unknown"}</span></td>
         <td class="mono">${esc(a.alertname || "—")}</td>
@@ -177,15 +179,58 @@
         <td class="mono muted-text">${fmtTime(a.starts_at)}</td>
         <td>${a.muted ? '<span class="pill st-muted">已屏蔽</span>' : '<span class="pill st-active">推送中</span>'}</td>
         <td>
-          <button class="btn ghost sm mute-btn" type="button">屏蔽</button>
+          <button class="btn ghost sm mute-btn" type="button" title="屏蔽此告警">屏蔽</button>
+          <button class="btn ghost sm expand-btn" type="button" title="展开详情">详情</button>
         </td>`;
-      tr.querySelector(".mute-btn").addEventListener("click", () => {
+      tr.querySelector(".mute-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
         openMuteDialog({
           alertname: a.alertname,
           hostname: a.hostname,
           instance: a.instance,
           reason: "临时屏蔽",
         });
+      });
+
+      // Build detail section
+      const detailRow = document.createElement("tr");
+      detailRow.className = "alert-detail";
+      detailRow.hidden = true;
+      let labelsHtml = "";
+      if (a.labels) {
+        labelsHtml = Object.entries(a.labels)
+          .map(([k, v]) => `<span class="tag">${esc(k)}<em>=</em><b>${esc(v)}</b></span>`)
+          .join(" ");
+      }
+      let annotHtml = "";
+      if (a.annotations) {
+        annotHtml = Object.entries(a.annotations)
+          .map(([k, v]) => `<span class="tag">${esc(k)}<em>=</em><b>${esc(v)}</b></span>`)
+          .join(" ");
+      }
+      detailRow.innerHTML = `<td colspan="7">
+        <div class="detail-box">
+          ${labelsHtml ? `<div class="detail-block"><span class="detail-label">Labels</span><div class="tag-list">${labelsHtml}</div></div>` : ""}
+          ${annotHtml ? `<div class="detail-block"><span class="detail-label">Annotations</span><div class="tag-list">${annotHtml}</div></div>` : ""}
+          <div class="detail-inline">
+            ${a.generator_url ? `<span class="detail-item"><span class="detail-label">Generator</span><a href="${esc(a.generator_url)}" target="_blank" rel="noopener">${esc(a.generator_url)}</a></span>` : ""}
+            ${a.fingerprint ? `<span class="detail-item"><span class="detail-label">Fingerprint</span><code>${esc(a.fingerprint)}</code></span>` : ""}
+            ${a.value ? `<span class="detail-item"><span class="detail-label">Value</span><code>${esc(a.value)}</code></span>` : ""}
+            ${a.muted && a.mute_id ? `<span class="detail-item"><span class="detail-label">Mute ID</span><code>${esc(a.mute_id)}</code></span>` : ""}
+          </div>
+        </div>
+      </td>`;
+
+      tr.after(detailRow);
+      tr.querySelector(".expand-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        detailRow.hidden = !detailRow.hidden;
+        tr.classList.toggle("expanded", !detailRow.hidden);
+      });
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        detailRow.hidden = !detailRow.hidden;
+        tr.classList.toggle("expanded", !detailRow.hidden);
       });
       tbody.appendChild(tr);
     }
