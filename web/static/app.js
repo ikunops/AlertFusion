@@ -12,6 +12,9 @@
   let historyCustomEnd = "";
   let historyPush = "all";
   let historyRecover = "all";
+  let historyPage = 1;
+  let historyPageSize = 20;
+  let filteredEvents = [];
 
   const toast = (msg) => {
     const el = $("#toast");
@@ -372,20 +375,31 @@
   function renderHistory(events) {
     const list = $("#historyList");
     const empty = $("#historyEmpty");
+    const countEl = $("#historyCount");
     list.innerHTML = "";
+
+    filteredEvents = applyHistoryFilters(events);
+    if (countEl) countEl.textContent = `共 ${filteredEvents.length} 条`;
+
     if (!events.length) {
       empty.hidden = false;
+      $("#historyPagination").hidden = true;
       return;
     }
     empty.hidden = true;
 
-    const filtered = applyHistoryFilters(events);
-    if (!filtered.length) {
+    if (!filteredEvents.length) {
       list.innerHTML = `<div class="empty">没有匹配的记录</div>`;
+      $("#historyPagination").hidden = true;
       return;
     }
 
-    for (const ev of filtered) {
+    const totalPages = Math.max(1, Math.ceil(filteredEvents.length / historyPageSize));
+    if (historyPage > totalPages) historyPage = totalPages;
+    const start = (historyPage - 1) * historyPageSize;
+    const pageItems = filteredEvents.slice(start, start + historyPageSize);
+
+    for (const ev of pageItems) {
       const div = document.createElement("div");
       div.className = "event";
       if (ev.action === "suppressed") div.classList.add("suppressed");
@@ -411,6 +425,41 @@
         </div>`;
       list.appendChild(div);
     }
+
+    renderPagination(totalPages);
+  }
+
+  function renderPagination(totalPages) {
+    const nav = $("#pageNav");
+    const pagination = $("#historyPagination");
+    if (!nav || totalPages <= 1) {
+      if (pagination) pagination.hidden = true;
+      return;
+    }
+    pagination.hidden = false;
+    nav.innerHTML = "";
+
+    const prev = document.createElement("button");
+    prev.className = "page-btn";
+    prev.textContent = "上一页";
+    prev.disabled = historyPage <= 1;
+    prev.addEventListener("click", () => { if (historyPage > 1) { historyPage--; refresh(); } });
+    nav.appendChild(prev);
+
+    for (let i = 1; i <= totalPages; i++) {
+      const btn = document.createElement("button");
+      btn.className = "page-btn" + (i === historyPage ? " active" : "");
+      btn.textContent = i;
+      btn.addEventListener("click", () => { historyPage = i; refresh(); });
+      nav.appendChild(btn);
+    }
+
+    const next = document.createElement("button");
+    next.className = "page-btn";
+    next.textContent = "下一页";
+    next.disabled = historyPage >= totalPages;
+    next.addEventListener("click", () => { if (historyPage < totalPages) { historyPage++; refresh(); } });
+    nav.appendChild(next);
   }
 
   function renderMutes(mutes) {
@@ -629,18 +678,38 @@
   // History filter event handlers
   $("#historySeverity").addEventListener("change", (e) => {
     historySeverity = e.target.value;
+    historyPage = 1;
     refresh();
   });
 
   $("#historyPush").addEventListener("change", (e) => {
     historyPush = e.target.value;
+    historyPage = 1;
     refresh();
   });
 
   $("#historyRecover").addEventListener("change", (e) => {
     historyRecover = e.target.value;
+    historyPage = 1;
     refresh();
   });
+
+  $("#pageSizeSelect").addEventListener("change", (e) => {
+    historyPageSize = parseInt(e.target.value, 10) || 20;
+    historyPage = 1;
+    refresh();
+  });
+
+  // Help dialog
+  const helpFab = $("#helpFab");
+  const helpDialog = $("#helpDialog");
+  if (helpFab && helpDialog) {
+    helpFab.addEventListener("click", () => helpDialog.showModal());
+    $("#helpClose").addEventListener("click", () => helpDialog.close());
+    helpDialog.addEventListener("click", (e) => {
+      if (e.target === helpDialog) helpDialog.close();
+    });
+  }
 
   // Date popover
   const datePopoverBtn = $("#datePopoverBtn");

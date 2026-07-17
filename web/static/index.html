@@ -209,7 +209,7 @@
       </div>
       <div class="filter-bar">
         <select class="filter-select" id="historySeverity" title="告警级别筛选">
-          <option value="all">全部级别</option>
+          <option value="all">告警级别</option>
           <option value="disaster">紧急</option>
           <option value="critical">严重</option>
           <option value="warning">告警</option>
@@ -256,9 +256,23 @@
           <option value="resolved">已修复</option>
           <option value="unresolved">未修复</option>
         </select>
+        <div class="filter-count" id="historyCount">共 0 条</div>
       </div>
       <div class="timeline" id="historyList"></div>
       <div class="empty" id="historyEmpty" hidden>暂无历史记录</div>
+      <div class="pagination" id="historyPagination">
+        <div class="page-size">
+          <span>每页显示</span>
+          <select class="page-size-select" id="pageSizeSelect">
+            <option value="10">10</option>
+            <option value="20" selected>20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+          <span>条</span>
+        </div>
+        <div class="page-nav" id="pageNav"></div>
+      </div>
     </section>
   </main>
 
@@ -320,6 +334,41 @@
   </dialog>
 
   <div class="toast" id="toast" hidden></div>
+  <button class="help-fab" id="helpFab" type="button" aria-label="业务说明">?</button>
+  <dialog id="helpDialog">
+    <div class="help-content">
+      <header class="dialog-head">
+        <h3>业务逻辑说明</h3>
+        <button type="button" class="btn ghost sm help-close" id="helpClose">关闭</button>
+      </header>
+      <div class="help-body">
+        <article>
+          <h4>活跃告警</h4>
+          <p>来自 Alertmanager 仍处于 firing 状态的告警。告警持续触发时会定期推送，直到恢复或手动屏蔽。</p>
+        </article>
+        <article>
+          <h4>活跃事件</h4>
+          <p>将同一规则、同一级别的多条告警聚合成一个“事件”，按 severity 降序，与推送到飞书/钉钉/企微的消息内容一致。</p>
+        </article>
+        <article>
+          <h4>屏蔽规则</h4>
+          <p>在生效时间段内，匹配告警不再推送通知。可指定告警名称、主机、实例或原因说明。</p>
+        </article>
+        <article>
+          <h4>冷却抑制</h4>
+          <p>同一告警在 cooldown 周期内重复触发时，仅记录历史但不重复推送，避免通知轰炸。</p>
+        </article>
+        <article>
+          <h4>通知状态</h4>
+          <p>已通知：成功推送到通道；未通知：firing 但未推送；已屏蔽：命中屏蔽规则；冷却抑制：在冷却周期内。</p>
+        </article>
+        <article>
+          <h4>修复状态</h4>
+          <p>已修复：Alertmanager 已发送 resolved；未修复：告警仍在 firing 或未收到恢复通知。</p>
+        </article>
+      </div>
+    </div>
+  </dialog>
   <script src="/static/app.js?v=2"></script>
 </body>
 </html>
