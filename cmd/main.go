@@ -93,6 +93,7 @@ func mountUI(router *gin.Engine) {
 		log.Fatalf("embed static: %v", err)
 	}
 	router.StaticFS("/static", http.FS(staticFS))
+	router.Static("/vue-demo", "web/vue-demo")
 	router.GET("/", func(c *gin.Context) {
 		data, err := fs.ReadFile(staticFS, "index.html")
 		if err != nil {
