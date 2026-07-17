@@ -138,36 +138,42 @@ body {
 }
 
 .metrics {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 22px;
 }
 .metric {
+  flex: 1 1 0;
+  min-width: 120px;
   background: rgba(255,255,255,0.78);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 14px 16px;
+  padding: 16px 18px;
   box-shadow: var(--shadow);
 }
-.metric.wide { grid-column: span 1; }
 .metric-label {
   display: block;
-  font-size: 0.78rem;
-  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--teal);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
   margin-bottom: 6px;
 }
 .metric-value {
   font-family: var(--display);
-  font-size: 1.7rem;
+  font-size: 1.8rem;
   font-weight: 700;
   letter-spacing: -0.03em;
+  line-height: 1.2;
+  word-break: break-word;
 }
 .metric-value.sm {
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 600;
   letter-spacing: 0;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .panel { display: none; }
@@ -533,7 +539,8 @@ input:focus {
     justify-items: start;
   }
   .top-actions { width: 100%; justify-content: stretch; }
-  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .metrics { flex-direction: row; flex-wrap: wrap; }
+  .metric { flex: 1 1 calc(50% - 12px); min-width: 0; }
   .form-grid, .custom-range { grid-template-columns: 1fr; }
   .event { grid-template-columns: 1fr; }
   .channel-grid { grid-template-columns: 1fr; }
