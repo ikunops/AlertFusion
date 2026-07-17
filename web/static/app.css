@@ -422,7 +422,7 @@ tbody tr:hover td { background: rgba(11, 110, 110, 0.04); }
   font-size: 0.85rem;
   font-weight: 600;
   padding: 6px 12px;
-  border: 1px solid var(--line);
+  border: 2px solid rgba(26, 36, 40, 0.18);
   border-radius: 8px;
   background: #fff;
   color: var(--ink);
@@ -432,6 +432,15 @@ tbody tr:hover td { background: rgba(11, 110, 110, 0.04); }
   gap: 6px;
   width: 100%;
   justify-content: center;
+  transition: border-color .15s, box-shadow .15s;
+}
+.date-popover-btn:hover {
+  border-color: rgba(26, 36, 40, 0.35);
+}
+.date-popover-btn:focus {
+  outline: none;
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(11, 110, 110, 0.12);
 }
 .date-popover-btn:hover {
   border-color: var(--teal);
@@ -550,7 +559,7 @@ dialog::backdrop { background: rgba(18, 28, 32, 0.45); backdrop-filter: blur(3px
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 14px;
+  margin-top: 8px;
   padding: 10px 12px;
   background: rgba(255,255,255,0.6);
   border: 1px solid var(--line);
@@ -809,6 +818,28 @@ input:focus {
   background: #fbfcfd;
 }
 #helpDialog::backdrop { background: rgba(18, 28, 32, 0.45); backdrop-filter: blur(3px); }
+.help-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.9);
+  color: var(--ink-soft);
+  font: 600 18px/1 var(--display);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .15s, color .15s;
+  z-index: 5;
+}
+.help-close:hover {
+  background: rgba(26, 36, 40, 0.06);
+  color: var(--ink);
+}
 .help-content { display: flex; flex-direction: column; }
 .help-body {
   padding: 0 22px 22px;
@@ -828,7 +859,6 @@ input:focus {
   color: var(--ink-soft);
   line-height: 1.55;
 }
-.help-close { align-self: flex-end; }
 
 /* === Incident Cards === */
 #incidentList {
