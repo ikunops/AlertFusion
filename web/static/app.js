@@ -63,13 +63,6 @@
   };
 
   const statusLabel = { active: "生效中", scheduled: "待生效", expired: "已过期" };
-  const actionLabel = {
-    notified: "已通知",
-    muted: "已屏蔽",
-    suppressed: "冷却抑制",
-    recovered: "已恢复",
-    firing: "推送失败",
-  };
   const incidentStatusLabel = {
     notified: "已通知",
     muted: "已屏蔽",
@@ -80,12 +73,12 @@
 
   const pushRecover = (action) => {
     switch (action) {
+      case "muted": return ["已屏蔽", "未修复", "push-muted", "recover-unfixed"];
       case "notified": return ["已通知", "未修复", "push-notified", "recover-unfixed"];
       case "recovered": return ["已通知", "已修复", "push-notified", "recover-fixed"];
-      case "muted": return ["已屏蔽", "未修复", "push-muted", "recover-unfixed"];
-      case "suppressed": return ["冷却抑制", "未修复", "push-suppressed", "recover-unfixed"];
-      case "firing": return ["推送失败", "未修复", "push-failed", "recover-unfixed"];
-      default: return [actionLabel[action] || action, "未知", "push-muted", "recover-unfixed"];
+      case "suppressed": return ["未通知", "未修复", "push-failed", "recover-unfixed"];
+      case "firing": return ["未通知", "未修复", "push-failed", "recover-unfixed"];
+      default: return [action, "未修复", "push-muted", "recover-unfixed"];
     }
   };
 
@@ -428,22 +421,11 @@
       const div = document.createElement("div");
       div.className = "event";
       const isSuppressed = ev.action === "suppressed";
-      const isMuted = ev.action === "muted";
       if (isSuppressed) div.classList.add("suppressed");
       const targets = (ev.targets || []).slice(0, 5).join(", ");
       const [pushTxt, recvTxt, pushCls, recvCls] = pushRecover(ev.action);
       const sv = ev.severity || "";
-      let pills;
-      if (isSuppressed) {
-        // 冷却抑制：不用小胶囊，仅靠加深的背景色表示；仅保留修复状态胶囊
-        pills = `<span class="history-pill ${recvCls}">${recvTxt}</span>`;
-      } else if (isMuted) {
-        // 已屏蔽：增加一个"已屏蔽"胶囊，并保留修复状态胶囊（已屏蔽本身替代通知状态）
-        pills = `<span class="history-pill push-muted">已屏蔽</span><span class="history-pill ${recvCls}">${recvTxt}</span>`;
-      } else {
-        // 其它：通知状态 + 修复状态 两个胶囊
-        pills = `<span class="history-pill ${pushCls}">${pushTxt}</span><span class="history-pill ${recvCls}">${recvTxt}</span>`;
-      }
+      const pills = `<span class="history-pill ${pushCls}">${pushTxt}</span><span class="history-pill ${recvCls}">${recvTxt}</span>`;
       div.innerHTML = `
         <span class="event-time">${fmtTime(ev.time)}</span>
         <div class="event-body">
