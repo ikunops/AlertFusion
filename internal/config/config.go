@@ -18,6 +18,7 @@ type Config struct {
 	Notification NotificationConfig `yaml:"notification"`
 	Mute         MuteConfig         `yaml:"mute"`
 	API          APIConfig          `yaml:"api"`
+	History      HistoryConfig      `yaml:"history"`
 }
 
 type ServerConfig struct {
@@ -90,6 +91,14 @@ type ChannelConfig struct {
 
 type MuteConfig struct {
 	StorePath string `yaml:"store_path"` // JSON persistence path for mute rules
+}
+
+// HistoryConfig controls persistence of the notification history (notify /
+// mute / suppress / recover events). History is appended to a JSON-lines file
+// and trimmed by Retention so the service restart keeps recent history.
+type HistoryConfig struct {
+	StorePath string        `yaml:"store_path"` // JSON-lines file, e.g. data/history.log
+	Retention time.Duration `yaml:"retention"`   // drop events older than this (0 = default 720h)
 }
 
 // Duration wraps time.Duration for YAML unmarshaling of values like "30s".
@@ -216,6 +225,10 @@ func Default() *Config {
 			StorePath: "data/mutes.json",
 		},
 		API: APIConfig{},
+		History: HistoryConfig{
+			StorePath: "data/history.log",
+			Retention: 720 * time.Hour,
+		},
 	}
 }
 
@@ -257,6 +270,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Mute.StorePath == "" {
 		c.Mute.StorePath = "data/mutes.json"
+	}
+	if c.History.StorePath == "" {
+		c.History.StorePath = "data/history.log"
+	}
+	if c.History.Retention == 0 {
+		c.History.Retention = 720 * time.Hour
 	}
 }
 

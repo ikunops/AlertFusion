@@ -275,7 +275,7 @@ dialog{border:1px solid var(--line);border-radius:18px;padding:0;width:min(560px
           </div>
         </div>
       </div>
-      <div v-if="!history.length" class="empty">暂无历史记录</div>
+      <div v-if="!history.length" class="empty">暂无历史记录（历史为本地文件存储 data/history.log，重启后保留，默认保留 30 天；顶部指标栏为累计统计）</div>
       <div v-if="filteredHistory.length>0" class="pagination">
         <div class="page-size">
           <span>每页显示</span>

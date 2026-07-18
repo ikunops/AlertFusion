@@ -56,6 +56,8 @@ func main() {
 	}
 
 	aggregator := engine.NewAggregator(cfg, notifiers, muteStore)
+	histPath, histCount := aggregator.HistoryStoreInfo()
+	log.Printf("history store: %s (%d event(s) loaded)", histPath, histCount)
 	receiver := webhook.NewReceiver(aggregator)
 	ui := api.New(cfg, *configPath, overlayPath, aggregator, muteStore)
 

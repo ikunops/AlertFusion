@@ -11,6 +11,11 @@ api:
 mute:
   store_path: data/mutes.json
 
+# 通知历史持久化（通知/屏蔽/抑制/恢复事件），重启后历史保留
+history:
+  store_path: data/history.log
+  retention: 720h   # 保留 30 天，超期自动裁剪
+
 aggregation:
   # 距上次告警空闲这么久才刷出（防抖，方便多个站点陆续到达后合并）
   wait_time: 30s

@@ -50,6 +50,7 @@ type Aggregator struct {
 	notifiers []notifier.Notifier
 	renderer  *template.Renderer
 	mutes     *mute.Store
+	histStore *HistoryStore
 
 	cmdCh chan command
 	done  chan struct{}
@@ -98,6 +99,10 @@ type Stats struct {
 }
 
 func NewAggregator(cfg *config.Config, notifiers []notifier.Notifier, mutes *mute.Store) *Aggregator {
+	histStore, err := NewHistoryStore(cfg.History.StorePath, cfg.History.Retention)
+	if err != nil {
+		log.Printf("WARNING: cannot open history store (%v); history will not persist", err)
+	}
 	a := &Aggregator{
 		cfg:       cfg,
 		analyzer:  NewAnalyzer(cfg),
@@ -105,8 +110,22 @@ func NewAggregator(cfg *config.Config, notifiers []notifier.Notifier, mutes *mut
 		notifiers: notifiers,
 		renderer:  template.NewRenderer(cfg.Notification.Cluster, cfg.Notification.MaxItems),
 		mutes:     mutes,
+		histStore: histStore,
 		cmdCh:     make(chan command, 256),
 		done:      make(chan struct{}),
+	}
+	// Restore recent history from disk so a restart keeps history (plan B0).
+	if histStore != nil {
+		if loaded, lerr := histStore.Load(); lerr == nil && len(loaded) > 0 {
+			restored := loaded
+			if len(restored) > maxHistory {
+				restored = restored[len(restored)-maxHistory:]
+			}
+			a.histCopy = restored
+			log.Printf("history store: restored %d event(s) from %s", len(restored), histStore.Path())
+		} else if lerr != nil {
+			log.Printf("WARNING: history store load failed (%v)", lerr)
+		}
 	}
 	a.snap = Snapshot{
 		Cluster:   cfg.Notification.Cluster,
@@ -357,6 +376,18 @@ func (a *Aggregator) Snapshot() Snapshot {
 	return a.snap
 }
 
+// HistoryStoreInfo returns the backing history file path and current in-memory
+// event count, for startup logging.
+func (a *Aggregator) HistoryStoreInfo() (string, int) {
+	if a.histStore == nil {
+		return "(disabled)", 0
+	}
+	a.histMu.RLock()
+	n := len(a.histCopy)
+	a.histMu.RUnlock()
+	return a.histStore.Path(), n
+}
+
 func (a *Aggregator) History(limit int) []HistoryEvent {
 	a.histMu.RLock()
 	hist := append([]HistoryEvent(nil), a.histCopy...)
@@ -381,6 +412,11 @@ func (a *Aggregator) pushHistoryCopy(ev HistoryEvent) {
 		a.histCopy = a.histCopy[len(a.histCopy)-maxHistory:]
 	}
 	a.histMu.Unlock()
+	if a.histStore != nil {
+		if err := a.histStore.Append(ev); err != nil {
+			log.Printf("WARNING: history store append failed (%v)", err)
+		}
+	}
 }
 
 func (a *Aggregator) pushIncidentsCopy(views []IncidentView) {
