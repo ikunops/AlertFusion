@@ -203,6 +203,7 @@ body {
 #panel-history .timeline {
   flex: 1 1 auto;
   overflow-y: auto;
+  max-height: 60vh;
 }
 
 .table-wrap {
