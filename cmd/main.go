@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/gin-gonic/gin"
@@ -94,8 +95,33 @@ func mountUI(router *gin.Engine) {
 	if err != nil {
 		log.Fatalf("embed static: %v", err)
 	}
-	router.StaticFS("/static", http.FS(staticFS))
+	// Serve static assets with no-cache so UI fixes are picked up immediately
+	// without a hard refresh. We read from the embedded FS directly (instead of
+	// http.FileServer) to avoid any path-prefix / caching surprises.
+	router.GET("/static/*filepath", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		rel := strings.TrimPrefix(c.Param("filepath"), "/")
+		if rel == "" {
+			rel = "index.html"
+		}
+		data, err := fs.ReadFile(staticFS, rel)
+		if err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		ctype := "application/octet-stream"
+		switch {
+		case strings.HasSuffix(rel, ".js"):
+			ctype = "text/javascript; charset=utf-8"
+		case strings.HasSuffix(rel, ".css"):
+			ctype = "text/css; charset=utf-8"
+		case strings.HasSuffix(rel, ".html"):
+			ctype = "text/html; charset=utf-8"
+		}
+		c.Data(http.StatusOK, ctype, data)
+	})
 	router.GET("/", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		data, err := fs.ReadFile(staticFS, "index.html")
 		if err != nil {
 			c.String(http.StatusInternalServerError, "ui missing")

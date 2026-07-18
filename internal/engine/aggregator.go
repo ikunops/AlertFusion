@@ -20,18 +20,28 @@ type ruleState struct {
 	targets   []string
 	keys      map[string]time.Time
 	notifiers map[string]bool // notifier names that have successfully delivered this rule's targets
+	failed    map[string]bool // notifier names that FAILED delivery in the most recent attempt
+}
+
+// DeliveryStatus records the outcome of one notifier channel for a single
+// history event (one notify/flush action). It lets the UI audit "did this
+// notification actually reach people?" without re-reading engine internals.
+type DeliveryStatus struct {
+	Channel string `json:"channel"` // notifier name, e.g. dingtalk
+	Status  string `json:"status"`  // delivered | failed
 }
 
 // HistoryEvent is a recent notify / mute / suppress record for the UI.
 type HistoryEvent struct {
-	Time      time.Time `json:"time"`
-	Action    string    `json:"action"` // notified | muted | suppressed | recovered
-	AlertName string    `json:"alertname"`
-	Severity  string    `json:"severity"`
-	Count     int       `json:"count"`
-	Targets   []string  `json:"targets,omitempty"`
-	Detail    string    `json:"detail,omitempty"`
-	Resolved  bool      `json:"resolved"`
+	Time      time.Time        `json:"time"`
+	Action    string           `json:"action"` // notified | muted | suppressed | recovered
+	AlertName string           `json:"alertname"`
+	Severity  string           `json:"severity"`
+	Count     int              `json:"count"`
+	Targets   []string         `json:"targets,omitempty"`
+	Detail    string           `json:"detail,omitempty"`
+	Resolved  bool             `json:"resolved"`
+	Delivery  []DeliveryStatus `json:"delivery,omitempty"` // per-channel outcome; nil for muted/suppressed
 }
 
 const maxHistory = 5000
@@ -65,29 +75,29 @@ type Aggregator struct {
 	histCopy []HistoryEvent
 
 	// incMu protects the read-only incident copy served to HTTP handlers.
-	incMu    sync.RWMutex
+	incMu   sync.RWMutex
 	incCopy []IncidentView
 }
 
 // IncidentView is a UI-friendly aggregated incident row.
 type IncidentView struct {
-	Type       string   `json:"type"`
-	Title      string   `json:"title"`
-	Severity   string   `json:"severity"`
-	Source     string   `json:"source"`
-	Job        string   `json:"job"`
-	Domains    []string `json:"domains,omitempty"`
-	Anomalies  []string `json:"anomalies,omitempty"`
-	Attached   []string `json:"attached,omitempty"`
-	Count      int      `json:"count"`
-	Suggestion string   `json:"suggestion,omitempty"`
-	Possible   []string `json:"possible,omitempty"`
+	Type       string    `json:"type"`
+	Title      string    `json:"title"`
+	Severity   string    `json:"severity"`
+	Source     string    `json:"source"`
+	Job        string    `json:"job"`
+	Domains    []string  `json:"domains,omitempty"`
+	Anomalies  []string  `json:"anomalies,omitempty"`
+	Attached   []string  `json:"attached,omitempty"`
+	Count      int       `json:"count"`
+	Suggestion string    `json:"suggestion,omitempty"`
+	Possible   []string  `json:"possible,omitempty"`
 	FiredAt    time.Time `json:"fired_at"`
-	Resolved   bool     `json:"resolved"`
-	Status     string   `json:"status"` // firing / muted / suppressed / notified
-	Targets    []string `json:"targets,omitempty"`
-	AlertName  string   `json:"alertname"`
-	MuteReason string   `json:"mute_reason,omitempty"`
+	Resolved   bool      `json:"resolved"`
+	Status     string    `json:"status"` // firing / muted / suppressed / notified
+	Targets    []string  `json:"targets,omitempty"`
+	AlertName  string    `json:"alertname"`
+	MuteReason string    `json:"mute_reason,omitempty"`
 }
 
 // Stats are runtime counters for the dashboard.
@@ -271,36 +281,49 @@ func (a *Aggregator) notifierNames() []string {
 
 // Snapshot for the UI.
 type Snapshot struct {
-	ActiveCount  int          `json:"active_count"`
+	ActiveCount   int         `json:"active_count"`
 	IncidentCount int         `json:"incident_count"`
-	BufferCount  int          `json:"buffer_count"`
-	WindowOpen   bool         `json:"window_open"`
-	WindowAt     *time.Time   `json:"window_at,omitempty"`
-	MuteActive   int          `json:"mute_active"`
-	Cooldown     string       `json:"cooldown"`
-	Cluster      string       `json:"cluster"`
-	Stats        Stats        `json:"stats"`
-	Notifiers    []string     `json:"notifiers"`
-	ActiveAlerts []AlertView  `json:"active_alerts"`
+	BufferCount   int         `json:"buffer_count"`
+	WindowOpen    bool        `json:"window_open"`
+	WindowAt      *time.Time  `json:"window_at,omitempty"`
+	MuteActive    int         `json:"mute_active"`
+	Cooldown      string      `json:"cooldown"`
+	Cluster       string      `json:"cluster"`
+	Stats         Stats       `json:"stats"`
+	Notifiers     []string    `json:"notifiers"`
+	ActiveAlerts  []AlertView `json:"active_alerts"`
 }
 
 // AlertView is a UI-friendly alert row.
 type AlertView struct {
-	Fingerprint string            `json:"fingerprint"`
-	Status      string            `json:"status"`
-	AlertName   string            `json:"alertname"`
-	Severity    string            `json:"severity"`
-	Instance    string            `json:"instance"`
-	Hostname    string            `json:"hostname"`
-	Job         string            `json:"job"`
-	Labels      map[string]string `json:"labels"`
-	Annotations map[string]string `json:"annotations"`
-	StartsAt    time.Time         `json:"starts_at"`
-	Muted       bool              `json:"muted"`
-	MuteID      string            `json:"mute_id,omitempty"`
-	Description string            `json:"description"`
-	Value       string            `json:"value"`
-	GeneratorURL string           `json:"generator_url,omitempty"`
+	Fingerprint  string            `json:"fingerprint"`
+	Status       string            `json:"status"`
+	AlertName    string            `json:"alertname"`
+	Severity     string            `json:"severity"`
+	Instance     string            `json:"instance"`
+	Hostname     string            `json:"hostname"`
+	Job          string            `json:"job"`
+	Labels       map[string]string `json:"labels"`
+	Annotations  map[string]string `json:"annotations"`
+	StartsAt     time.Time         `json:"starts_at"`
+	Muted        bool              `json:"muted"`
+	MuteID       string            `json:"mute_id,omitempty"`
+	Description  string            `json:"description"`
+	Value        string            `json:"value"`
+	GeneratorURL string            `json:"generator_url,omitempty"`
+	// Enriched fields for the detail panel (filled from ruleState).
+	Delivery     []ChannelDelivery `json:"delivery,omitempty"`
+	RawCount     int               `json:"raw_count,omitempty"`
+	FirstSeen    *time.Time        `json:"first_seen,omitempty"`
+	LastSeen     *time.Time        `json:"last_seen,omitempty"`
+	NextNotifyAt *time.Time        `json:"next_notify_at,omitempty"`
+}
+
+// ChannelDelivery reports the delivery outcome of one notification channel for
+// the rule this alert belongs to.
+type ChannelDelivery struct {
+	Channel string `json:"channel"`
+	Status  string `json:"status"` // delivered | failed | pending
 }
 
 func (a *Aggregator) publishSnapshot(s *state) {
@@ -313,24 +336,61 @@ func (a *Aggregator) publishSnapshot(s *state) {
 	views := make([]AlertView, 0, len(active))
 	for _, al := range active {
 		view := AlertView{
-			Fingerprint: al.Fingerprint,
-			Status:      al.Status,
-			AlertName:   al.AlertName(),
-			Severity:    al.Severity(),
-			Instance:    al.Instance(),
-			Hostname:    al.Hostname(),
-			Job:         al.Job(),
-			Labels:      al.Labels,
-			Annotations: al.Annotations,
-			StartsAt:    al.StartsAt,
-			Description: al.Description(),
-			Value:       al.Value(),
+			Fingerprint:  al.Fingerprint,
+			Status:       al.Status,
+			AlertName:    al.AlertName(),
+			Severity:     al.Severity(),
+			Instance:     al.Instance(),
+			Hostname:     al.Hostname(),
+			Job:          al.Job(),
+			Labels:       al.Labels,
+			Annotations:  al.Annotations,
+			StartsAt:     al.StartsAt,
+			Description:  al.Description(),
+			Value:        al.Value(),
 			GeneratorURL: al.GeneratorURL,
 		}
 		if a.mutes != nil {
 			if m := a.mutes.Match(al); m != nil {
 				view.Muted = true
 				view.MuteID = m.ID
+			}
+		}
+		// Enrich from ruleState: per-channel delivery, aggregation count,
+		// first/last seen, and next cooldown re-notify time.
+		if st := (*s.lastByRule)[ruleKeyOfAlert(al)]; st != nil {
+			delivery := make([]ChannelDelivery, 0, len(a.notifiers))
+			for _, n := range a.notifiers {
+				name := n.Name()
+				status := "pending"
+				if st.notifiers[name] {
+					status = "delivered"
+				} else if st.failed[name] {
+					status = "failed"
+				}
+				delivery = append(delivery, ChannelDelivery{Channel: name, Status: status})
+			}
+			view.Delivery = delivery
+			view.RawCount = len(st.keys)
+			var f, l time.Time
+			first := true
+			for _, t := range st.keys {
+				if first || t.Before(f) {
+					f = t
+					first = false
+				}
+				if t.After(l) {
+					l = t
+				}
+			}
+			if !first {
+				ff, ll := f, l
+				view.FirstSeen = &ff
+				view.LastSeen = &ll
+			}
+			if !st.sentAt.IsZero() {
+				nxt := st.sentAt.Add(a.cooldown())
+				view.NextNotifyAt = &nxt
 			}
 		}
 		views = append(views, view)
@@ -356,14 +416,14 @@ func (a *Aggregator) publishSnapshot(s *state) {
 		ActiveCount:   len(active),
 		IncidentCount: incCount,
 		BufferCount:   len(*s.buffer),
-		WindowOpen:   *s.started,
-		WindowAt:     windowAt,
-		MuteActive:   muteActive,
-		Cooldown:     a.cooldown().String(),
-		Cluster:      a.cfg.Notification.Cluster,
-		Stats:        *s.stats,
-		Notifiers:    a.notifierNames(),
-		ActiveAlerts: views,
+		WindowOpen:    *s.started,
+		WindowAt:      windowAt,
+		MuteActive:    muteActive,
+		Cooldown:      a.cooldown().String(),
+		Cluster:       a.cfg.Notification.Cluster,
+		Stats:         *s.stats,
+		Notifiers:     a.notifierNames(),
+		ActiveAlerts:  views,
 	}
 
 	a.snapMu.Lock()
@@ -691,7 +751,7 @@ func (a *Aggregator) flushLocked(s *state) {
 			// No notifiers enabled, or every enabled channel already delivered
 			// these targets within cooldown → nothing to (re)send.
 			if len(a.notifiers) == 0 {
-				a.markRuleNotifiedLocked(s, rk, *inc, targets, nil)
+				a.markRuleNotifiedLocked(s, rk, *inc, targets, nil, nil)
 			}
 			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "notified", ""))
 			continue
@@ -699,7 +759,7 @@ func (a *Aggregator) flushLocked(s *state) {
 
 		succeeded, failed, anyOK := a.dispatch(msg, toSend)
 		if anyOK {
-			a.markRuleNotifiedLocked(s, rk, *inc, targets, succeeded)
+			a.markRuleNotifiedLocked(s, rk, *inc, targets, succeeded, failed)
 			s.stats.NotifiedTotal++
 			detail := ""
 			if len(failed) > 0 {
@@ -712,6 +772,7 @@ func (a *Aggregator) flushLocked(s *state) {
 				Count:     inc.Count,
 				Targets:   targets,
 				Detail:    detail,
+				Delivery:  a.buildDeliveryLocked(s, rk, succeeded, failed),
 			})
 			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "notified", ""))
 		} else {
@@ -722,6 +783,7 @@ func (a *Aggregator) flushLocked(s *state) {
 				Count:     inc.Count,
 				Targets:   targets,
 				Detail:    "全部待发通道发送失败: " + strings.Join(failed, ","),
+				Delivery:  a.buildDeliveryLocked(s, rk, succeeded, failed),
 			})
 			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "firing", ""))
 		}
@@ -906,15 +968,18 @@ func (a *Aggregator) pendingNotifiersLocked(s *state, rk string, targets []strin
 	return pending
 }
 
-func (a *Aggregator) markRuleNotifiedLocked(s *state, rk string, inc alert.Incident, targets []string, succeeded []string) {
+func (a *Aggregator) markRuleNotifiedLocked(s *state, rk string, inc alert.Incident, targets []string, succeeded, failed []string) {
 	now := time.Now()
 	st := (*s.lastByRule)[rk]
 	if st == nil {
-		st = &ruleState{keys: make(map[string]time.Time), notifiers: make(map[string]bool)}
+		st = &ruleState{keys: make(map[string]time.Time), notifiers: make(map[string]bool), failed: make(map[string]bool)}
 		(*s.lastByRule)[rk] = st
 	}
 	if st.notifiers == nil {
 		st.notifiers = make(map[string]bool)
+	}
+	if st.failed == nil {
+		st.failed = make(map[string]bool)
 	}
 	st.sentAt = now
 	st.targets = unionStrings(st.targets, targets)
@@ -924,8 +989,42 @@ func (a *Aggregator) markRuleNotifiedLocked(s *state, rk string, inc alert.Incid
 	}
 	for _, name := range succeeded {
 		st.notifiers[name] = true
+		delete(st.failed, name)
 	}
-	log.Printf("aggregator: notify committed rule=%s targets=%v channels=%v cooldown=%s", rk, st.targets, succeeded, a.cooldown())
+	for _, name := range failed {
+		st.failed[name] = true
+	}
+	log.Printf("aggregator: notify committed rule=%s targets=%v channels=%v failed=%v cooldown=%s", rk, st.targets, succeeded, failed, a.cooldown())
+}
+
+// buildDeliveryLocked assembles per-channel delivery outcomes for a history
+// event. It merges channels already delivered in prior cooldown windows
+// (ruleState.notifiers) with this round's succeeded/failed, so the UI can
+// show the complete "did it reach everyone?" picture rather than only what
+// was attempted this flush. Returns nil when there is nothing to report
+// (e.g. muted/suppressed, where no delivery was attempted).
+func (a *Aggregator) buildDeliveryLocked(s *state, rk string, succeeded, failed []string) []DeliveryStatus {
+	set := make(map[string]string)
+	if st := (*s.lastByRule)[rk]; st != nil {
+		for n := range st.notifiers {
+			set[n] = "delivered"
+		}
+	}
+	for _, n := range succeeded {
+		set[n] = "delivered"
+	}
+	for _, n := range failed {
+		set[n] = "failed"
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]DeliveryStatus, 0, len(set))
+	for ch, st := range set {
+		out = append(out, DeliveryStatus{Channel: ch, Status: st})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Channel < out[j].Channel })
+	return out
 }
 
 // dispatch sends msg to the given notifiers concurrently, each with its own

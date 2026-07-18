@@ -182,10 +182,10 @@
       const anomalies = (inc.anomalies || []).map(d => `<span class="tag">${esc(d)}</span>`).join(" ");
       const attached = (inc.attached || []).map(d => `<span class="tag">${esc(d)}</span>`).join(" ");
       detail.innerHTML = `<div class="detail-box">
-        ${inc.source ? `<div class="detail-block"><span class="detail-label">Source</span><div class="tag-list"><span class="tag">${esc(inc.source)}</span></div></div>` : ""}
-        ${domains ? `<div class="detail-block"><span class="detail-label">Domains</span><div class="tag-list">${domains}</div></div>` : ""}
-        ${anomalies ? `<div class="detail-block"><span class="detail-label">Anomalies</span><div class="tag-list">${anomalies}</div></div>` : ""}
-        ${attached ? `<div class="detail-block"><span class="detail-label">Attached</span><div class="tag-list">${attached}</div></div>` : ""}
+        ${inc.source ? `<div class="detail-block"><span class="detail-label">来源</span><div class="tag-list"><span class="tag">${esc(inc.source)}</span></div></div>` : ""}
+        ${domains ? `<div class="detail-block"><span class="detail-label">域名</span><div class="tag-list">${domains}</div></div>` : ""}
+        ${anomalies ? `<div class="detail-block"><span class="detail-label">异常</span><div class="tag-list">${anomalies}</div></div>` : ""}
+        ${attached ? `<div class="detail-block"><span class="detail-label">关联</span><div class="tag-list">${attached}</div></div>` : ""}
         ${targets ? `<div class="detail-block"><span class="detail-label">受影响目标</span><div class="tag-list"><span class="tag">${esc(targets)}</span></div></div>` : ""}
       </div>`;
 
@@ -254,19 +254,63 @@
           .map(([k, v]) => `<span class="tag">${esc(k)}<em>=</em><b>${esc(v)}</b></span>`)
           .join(" ");
       }
+      const duration = (() => {
+        const d = new Date(a.starts_at);
+        if (Number.isNaN(d.getTime())) return "—";
+        let s = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+        const h = Math.floor(s / 3600); s -= h * 3600;
+        const m = Math.floor(s / 60); s -= m * 60;
+        if (h > 0) return `${h}小时${m}分`;
+        if (m > 0) return `${m}分${s}秒`;
+        return `${s}秒`;
+      })();
+
+      const deliveryHtml = (a.delivery && a.delivery.length)
+        ? a.delivery.map(d => {
+            const cls = d.status === "delivered" ? "dv-ok" : d.status === "failed" ? "dv-fail" : "dv-pending";
+            const icon = d.status === "delivered" ? "✓" : d.status === "failed" ? "✗" : "⏳";
+            const txt = d.status === "delivered" ? "已送达" : d.status === "failed" ? "失败·将重试" : "待发送";
+            return `<span class="dv-chip ${cls}"><b>${esc(d.channel)}</b> ${icon} ${txt}</span>`;
+          }).join("")
+        : `<span class="muted-text">待聚合</span>`;
+
+      const aggParts = [];
+      if (a.raw_count) aggParts.push(`合并 <b>${a.raw_count}</b> 条`);
+      if (a.first_seen) aggParts.push(`首见 ${fmtTime(a.first_seen)}`);
+      if (a.last_seen) aggParts.push(`最近 ${fmtTime(a.last_seen)}`);
+      if (a.next_notify_at) aggParts.push(`下次重通知 ${fmtTime(a.next_notify_at)}`);
+      const aggHtml = aggParts.length ? aggParts.join(" · ") : "—";
+
       detailRow.innerHTML = `<td colspan="7">
         <div class="detail-box">
-          ${labelsHtml ? `<div class="detail-block"><span class="detail-label">Labels</span><div class="tag-list">${labelsHtml}</div></div>` : ""}
-          ${annotHtml ? `<div class="detail-block"><span class="detail-label">Annotations</span><div class="tag-list">${annotHtml}</div></div>` : ""}
-          <div class="detail-inline">
-            ${a.generator_url ? `<span class="detail-item"><span class="detail-label">Generator</span><a href="${esc(a.generator_url)}" target="_blank" rel="noopener">${esc(a.generator_url)}</a></span>` : ""}
-            ${a.fingerprint ? `<span class="detail-item"><span class="detail-label">Fingerprint</span><code>${esc(a.fingerprint)}</code></span>` : ""}
-            ${a.value ? `<span class="detail-item"><span class="detail-label">Value</span><code>${esc(a.value)}</code></span>` : ""}
-            ${a.muted && a.mute_id ? `<span class="detail-item"><span class="detail-label">Mute ID</span><code>${esc(a.mute_id)}</code></span>` : ""}
+          <div class="detail-overview">
+            <span class="pill ${sevClass(a.severity)}">${severityLabel[a.severity] || a.severity || "未知"}</span>
+            <span class="detail-item">已持续 <b>${duration}</b></span>
+            ${a.muted ? '<span class="pill st-muted">已屏蔽</span>' : '<span class="pill st-active">推送中</span>'}
           </div>
+          <div class="detail-block">
+            <span class="detail-label">投递情况</span>
+            <div class="tag-list">${deliveryHtml}</div>
+          </div>
+          <div class="detail-block">
+            <span class="detail-label">聚合</span>
+            <div class="agg-line">${aggHtml}</div>
+          </div>
+          <details class="detail-raw">
+            <summary>原始数据</summary>
+            ${labelsHtml ? `<div class="detail-block"><span class="detail-label">标签</span><div class="tag-list">${labelsHtml}</div></div>` : ""}
+            ${annotHtml ? `<div class="detail-block"><span class="detail-label">注解</span><div class="tag-list">${annotHtml}</div></div>` : ""}
+            <div class="detail-inline">
+              ${a.generator_url ? `<span class="detail-item"><span class="detail-label">生成器</span><a href="${esc(a.generator_url)}" target="_blank" rel="noopener">${esc(a.generator_url)}</a></span>` : ""}
+              ${a.fingerprint ? `<span class="detail-item"><span class="detail-label">指纹</span><code>${esc(a.fingerprint)}</code></span>` : ""}
+              ${a.value ? `<span class="detail-item"><span class="detail-label">数值</span><code>${esc(a.value)}</code></span>` : ""}
+              ${a.muted && a.mute_id ? `<span class="detail-item"><span class="detail-label">静默ID</span><code>${esc(a.mute_id)}</code></span>` : ""}
+            </div>
+          </details>
         </div>
       </td>`;
 
+      tbody.appendChild(tr);
       tr.after(detailRow);
       tr.querySelector(".expand-btn").addEventListener("click", (e) => {
         e.stopPropagation();
@@ -278,7 +322,6 @@
         detailRow.hidden = !detailRow.hidden;
         tr.classList.toggle("expanded", !detailRow.hidden);
       });
-      tbody.appendChild(tr);
     }
   }
 
@@ -420,12 +463,22 @@
     for (const ev of pageItems) {
       const div = document.createElement("div");
       div.className = "event";
-      const isSuppressed = ev.action === "suppressed";
-      if (isSuppressed) div.classList.add("suppressed");
-      const targets = (ev.targets || []).slice(0, 5).join(", ");
+      if (ev.action === "suppressed") div.classList.add("suppressed");
+      div.tabIndex = 0;
+      div.setAttribute("role", "button");
+      div.setAttribute("aria-expanded", "false");
+      const shownTargets = (ev.targets || []).slice(0, 5).join(", ");
+      const fullTargets = (ev.targets || []).join(", ") || "—";
       const [pushTxt, recvTxt, pushCls, recvCls] = pushRecover(ev.action);
       const sv = ev.severity || "";
       const pills = `<span class="history-pill ${pushCls}">${pushTxt}</span><span class="history-pill ${recvCls}">${recvTxt}</span>`;
+      const deliveryChips = (ev.delivery && ev.delivery.length)
+        ? `<div class="event-delivery">` + ev.delivery.map(d => {
+            const ok = d.status === "delivered";
+            // 以 ✓/✗ 打勾开头，贴合“选择了什么通道就在历史打勾”的语义
+            return `<span class="dv-chip ${ok ? "dv-ok" : "dv-fail"}">${ok ? "✓" : "✗"} ${esc(d.channel)}</span>`;
+          }).join("") + `</div>`
+        : "";
       div.innerHTML = `
         <span class="event-time">${fmtTime(ev.time)}</span>
         <div class="event-body">
@@ -434,12 +487,52 @@
             <div class="event-meta">
               <span class="pill ${sevClass(sv)}">${severityLabel[sv.toLowerCase()] || sv}</span>
               · 影响 ${ev.count || 0}
-              ${targets ? ` · ${esc(targets)}` : ""}
-              ${ev.detail ? ` · ${esc(ev.detail)}` : ""}
+              ${shownTargets ? ` · ${esc(shownTargets)}` : ""}
+              ${ev.detail && !ev.delivery ? ` · ${esc(ev.detail)}` : ""}
             </div>
+            ${deliveryChips}
           </div>
-          <div class="event-pills">${pills}</div>
+          <div class="event-pills">
+            ${pills}
+            <span class="event-chevron" aria-hidden="true">▶</span>
+          </div>
+        </div>
+        <div class="event-detail" hidden>
+          <div class="detail-block"><span class="detail-label">完整投递目标</span><div class="tag-list">${esc(fullTargets)}</div></div>
+          ${ev.detail ? `<div class="detail-block"><span class="detail-label">详情</span><div class="tag-list">${esc(ev.detail)}</div></div>` : ""}
+          <div class="detail-inline"><span class="detail-item"><span class="detail-label">解决状态</span><code>${ev.resolved ? "已恢复" : "未恢复"}</code></span></div>
         </div>`;
+      const toggle = () => {
+        const d = div.querySelector(".event-detail");
+        d.hidden = !d.hidden;
+        div.classList.toggle("expanded", !d.hidden);
+        div.setAttribute("aria-expanded", String(!d.hidden));
+      };
+      // 带延迟的单击：按下后若发生移动(拖动/划过>8px)则取消，避免随手一划就展开
+      div.addEventListener("pointerdown", (e) => {
+        if (e.target.closest(".event-detail")) return; // 点已展开内容不触发
+        if (e.target.closest("a")) return;             // 链接独立打开
+        const sx = e.clientX, sy = e.clientY;
+        const move = (me) => {
+          if (Math.hypot(me.clientX - sx, me.clientY - sy) > 8) cleanup();
+        };
+        const up = (ue) => {
+          cleanup();
+          if (Math.hypot(ue.clientX - sx, ue.clientY - sy) <= 8) toggle();
+        };
+        const cleanup = () => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      });
+      div.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+          e.preventDefault();
+          toggle();
+        }
+      });
       list.appendChild(div);
     }
 
