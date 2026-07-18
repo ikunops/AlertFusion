@@ -32,31 +32,42 @@ func New(cfg *config.Config, configPath, overlayPath string, aggregator *engine.
 }
 
 func (h *Handler) Register(router *gin.Engine) {
-	api := router.Group("/api/v1")
-	api.Use(h.authMiddleware())
+	// Read-only console APIs stay open (dashboard / read views).
+	read := router.Group("/api/v1")
 	{
-		api.GET("/dashboard", h.Dashboard)
-		api.GET("/alerts/active", h.ActiveAlerts)
-		api.GET("/incidents", h.Incidents)
-		api.GET("/alerts/history", h.History)
-		api.GET("/mutes", h.ListMutes)
-		api.POST("/mutes", h.CreateMute)
-		api.DELETE("/mutes/:id", h.DeleteMute)
-		api.POST("/aggregator/flush", h.Flush)
-		api.GET("/settings/notification", h.GetNotification)
-		api.PUT("/settings/notification", h.UpdateNotification)
+		read.GET("/dashboard", h.Dashboard)
+		read.GET("/alerts/active", h.ActiveAlerts)
+		read.GET("/incidents", h.Incidents)
+		read.GET("/alerts/history", h.History)
+		read.GET("/mutes", h.ListMutes)
+		read.GET("/settings/notification", h.GetNotification)
+	}
+
+	// Mutating management APIs require a configured API token. When no token
+	// is set they are rejected with 401 instead of being left open, so the
+	// alert policy (mutes, notification channels, cooldown) cannot be changed
+	// by anyone who can reach the port.
+	write := router.Group("/api/v1")
+	write.Use(h.requireAuth())
+	{
+		write.POST("/mutes", h.CreateMute)
+		write.DELETE("/mutes/:id", h.DeleteMute)
+		write.POST("/aggregator/flush", h.Flush)
+		write.PUT("/settings/notification", h.UpdateNotification)
 	}
 }
 
-// authMiddleware protects all management/console APIs. When no API token is
-// configured it is a no-op (open, as before). The Alertmanager webhook is
-// registered separately and is never protected by this middleware.
-func (h *Handler) authMiddleware() gin.HandlerFunc {
+// requireAuth rejects requests unless a matching API token is presented. Unlike
+// a permissive middleware, an empty token here means "closed" (401), not "open".
+func (h *Handler) requireAuth() gin.HandlerFunc {
 	token := strings.TrimSpace(h.cfg.API.Token)
-	if token == "" {
-		return func(c *gin.Context) { c.Next() }
-	}
 	return func(c *gin.Context) {
+		if token == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "management API requires api.token to be configured",
+			})
+			return
+		}
 		provided := c.GetHeader("Authorization")
 		provided = strings.TrimSpace(strings.TrimPrefix(provided, "Bearer "))
 		if provided != token {
