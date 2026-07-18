@@ -182,7 +182,29 @@
         ${inc.mute_reason ? `<div class="incident-mute-reason"><strong>屏蔽原因:</strong> ${esc(inc.mute_reason)}</div>` : ""}
       `;
       card.innerHTML = cardHtml;
+
+      const detail = document.createElement("div");
+      detail.className = "incident-detail hidden";
+      const domains = (inc.domains || []).map(d => `<span class="tag">${esc(d)}</span>`).join(" ");
+      const anomalies = (inc.anomalies || []).map(d => `<span class="tag">${esc(d)}</span>`).join(" ");
+      const attached = (inc.attached || []).map(d => `<span class="tag">${esc(d)}</span>`).join(" ");
+      detail.innerHTML = `<div class="detail-box">
+        ${inc.source ? `<div class="detail-block"><span class="detail-label">Source</span><div class="tag-list"><span class="tag">${esc(inc.source)}</span></div></div>` : ""}
+        ${domains ? `<div class="detail-block"><span class="detail-label">Domains</span><div class="tag-list">${domains}</div></div>` : ""}
+        ${anomalies ? `<div class="detail-block"><span class="detail-label">Anomalies</span><div class="tag-list">${anomalies}</div></div>` : ""}
+        ${attached ? `<div class="detail-block"><span class="detail-label">Attached</span><div class="tag-list">${attached}</div></div>` : ""}
+        ${targets ? `<div class="detail-block"><span class="detail-label">受影响目标</span><div class="tag-list"><span class="tag">${esc(targets)}</span></div></div>` : ""}
+      </div>`;
+
+      card.style.cursor = "pointer";
+      const toggle = () => {
+        detail.classList.toggle("hidden");
+        detail.hidden = !detail.hidden;
+        card.classList.toggle("expanded", !detail.hidden);
+      };
+      card.addEventListener("click", toggle);
       list.appendChild(card);
+      list.appendChild(detail);
     }
   }
 

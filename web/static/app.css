@@ -944,6 +944,22 @@ input:focus {
   border-radius: 8px;
 }
 
+.incident-card { cursor: pointer; }
+.incident-detail {
+  margin: -4px 0 12px;
+  padding: 0 16px 4px;
+}
+.incident-detail.hidden { display: none; }
+.incident-detail .detail-box {
+  background: rgba(247, 249, 250, 0.7);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 @media (max-width: 980px) {
   .topbar {
     grid-template-columns: 1fr;
