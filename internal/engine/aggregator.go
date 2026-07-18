@@ -16,9 +16,10 @@ import (
 )
 
 type ruleState struct {
-	sentAt  time.Time
-	targets []string
-	keys    map[string]time.Time
+	sentAt    time.Time
+	targets   []string
+	keys      map[string]time.Time
+	notifiers map[string]bool // notifier names that have successfully delivered this rule's targets
 }
 
 // HistoryEvent is a recent notify / mute / suppress record for the UI.
@@ -681,15 +682,36 @@ func (a *Aggregator) flushLocked(s *state) {
 
 		msg := a.renderer.Render(*inc)
 		log.Printf("aggregator: message[%d]:\n----------\n%s\n----------", i, msg.RawText)
-		if a.dispatch(msg) {
-			a.markRuleNotifiedLocked(s, rk, *inc, targets)
+
+		// Only (re)send to notifiers that have not yet delivered this incident.
+		// Already-successful channels are skipped, so a single bad channel no
+		// longer causes healthy channels to be re-bombed on every cooldown tick.
+		toSend := a.pendingNotifiersLocked(s, rk, targets)
+		if len(toSend) == 0 {
+			// No notifiers enabled, or every enabled channel already delivered
+			// these targets within cooldown → nothing to (re)send.
+			if len(a.notifiers) == 0 {
+				a.markRuleNotifiedLocked(s, rk, *inc, targets, nil)
+			}
+			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "notified", ""))
+			continue
+		}
+
+		succeeded, failed, anyOK := a.dispatch(msg, toSend)
+		if anyOK {
+			a.markRuleNotifiedLocked(s, rk, *inc, targets, succeeded)
 			s.stats.NotifiedTotal++
+			detail := ""
+			if len(failed) > 0 {
+				detail = "部分通道失败(已跳过已成功通道，下次重试): " + strings.Join(failed, ",")
+			}
 			a.pushHistoryCopy(HistoryEvent{
 				Action:    "notified",
 				AlertName: alert.FirstNonEmpty(inc.Source, inc.Title),
 				Severity:  inc.Severity,
 				Count:     inc.Count,
 				Targets:   targets,
+				Detail:    detail,
 			})
 			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "notified", ""))
 		} else {
@@ -699,7 +721,7 @@ func (a *Aggregator) flushLocked(s *state) {
 				Severity:  inc.Severity,
 				Count:     inc.Count,
 				Targets:   targets,
-				Detail:    "所有通知通道发送失败",
+				Detail:    "全部待发通道发送失败: " + strings.Join(failed, ","),
 			})
 			incidentViews = append(incidentViews, makeIncidentView(inc, targets, "firing", ""))
 		}
@@ -786,9 +808,14 @@ func (a *Aggregator) flushResolvedLocked(s *state, resolved []alert.Alert) {
 
 			msg := a.renderer.Render(*inc)
 			log.Printf("aggregator: recovery message:\n----------\n%s\n----------", msg.RawText)
-			if a.dispatch(msg) {
+			_, failed, ok := a.dispatch(msg, a.notifiers)
+			if ok {
 				a.clearRecoveredTargetsLocked(s, rk, batch, targets)
 				s.stats.RecoveredTotal++
+				detail := ""
+				if len(failed) > 0 {
+					detail = "部分通道恢复通知失败(已成功通道不重发): " + strings.Join(failed, ",")
+				}
 				a.pushHistoryCopy(HistoryEvent{
 					Action:    "recovered",
 					AlertName: alert.FirstNonEmpty(inc.Source, inc.Title),
@@ -796,6 +823,7 @@ func (a *Aggregator) flushResolvedLocked(s *state, resolved []alert.Alert) {
 					Count:     inc.Count,
 					Targets:   targets,
 					Resolved:  true,
+					Detail:    detail,
 				})
 				resolvedViews = append(resolvedViews, makeIncidentView(inc, targets, "resolved", ""))
 			}
@@ -842,15 +870,51 @@ func (a *Aggregator) shouldSuppressIncidentLocked(s *state, rk string, targets [
 	if time.Since(st.sentAt) >= cooldown {
 		return false
 	}
-	return isSubset(targets, st.targets)
+	if !isSubset(targets, st.targets) {
+		return false // new target appeared → must re-notify
+	}
+	// Same targets within cooldown: suppress only when every enabled notifier
+	// has already delivered them (no pending channel left to retry).
+	for _, n := range a.notifiers {
+		if st.notifiers == nil || !st.notifiers[n.Name()] {
+			return false
+		}
+	}
+	return true
 }
 
-func (a *Aggregator) markRuleNotifiedLocked(s *state, rk string, inc alert.Incident, targets []string) {
+// pendingNotifiersLocked returns the notifiers that should still send this
+// incident: all enabled notifiers when cooldown expired or new targets appear,
+// otherwise only those that have not yet successfully delivered it.
+func (a *Aggregator) pendingNotifiersLocked(s *state, rk string, targets []string) []notifier.Notifier {
+	st := (*s.lastByRule)[rk]
+	if st == nil {
+		return append([]notifier.Notifier(nil), a.notifiers...)
+	}
+	if time.Since(st.sentAt) >= a.cooldown() {
+		return append([]notifier.Notifier(nil), a.notifiers...)
+	}
+	if !isSubset(targets, st.targets) {
+		return append([]notifier.Notifier(nil), a.notifiers...)
+	}
+	var pending []notifier.Notifier
+	for _, n := range a.notifiers {
+		if st.notifiers == nil || !st.notifiers[n.Name()] {
+			pending = append(pending, n)
+		}
+	}
+	return pending
+}
+
+func (a *Aggregator) markRuleNotifiedLocked(s *state, rk string, inc alert.Incident, targets []string, succeeded []string) {
 	now := time.Now()
 	st := (*s.lastByRule)[rk]
 	if st == nil {
-		st = &ruleState{keys: make(map[string]time.Time)}
+		st = &ruleState{keys: make(map[string]time.Time), notifiers: make(map[string]bool)}
 		(*s.lastByRule)[rk] = st
+	}
+	if st.notifiers == nil {
+		st.notifiers = make(map[string]bool)
 	}
 	st.sentAt = now
 	st.targets = unionStrings(st.targets, targets)
@@ -858,26 +922,52 @@ func (a *Aggregator) markRuleNotifiedLocked(s *state, rk string, inc alert.Incid
 	for _, al := range inc.Alerts {
 		st.keys[alertDedupeKey(al)] = now
 	}
-	log.Printf("aggregator: notify committed rule=%s targets=%v cooldown=%s", rk, st.targets, a.cooldown())
+	for _, name := range succeeded {
+		st.notifiers[name] = true
+	}
+	log.Printf("aggregator: notify committed rule=%s targets=%v channels=%v cooldown=%s", rk, st.targets, succeeded, a.cooldown())
 }
 
-func (a *Aggregator) dispatch(msg alert.Message) bool {
-	ns := append([]notifier.Notifier(nil), a.notifiers...)
+// dispatch sends msg to the given notifiers concurrently, each with its own
+// retry. It returns the names of notifiers that succeeded and failed, and
+// whether at least one succeeded. Sending the channels in parallel (instead of
+// serially) bounds the blocking window to the slowest single channel rather
+// than the sum of all channels, so one hung channel can no longer freeze the
+// whole ingest pipeline.
+func (a *Aggregator) dispatch(msg alert.Message, toSend []notifier.Notifier) (succeeded, failed []string, anyOK bool) {
+	ns := toSend
 	if len(ns) == 0 {
-		log.Printf("aggregator: no notifiers enabled, message logged only")
-		return true
+		// Nothing pending: the message was already delivered to all channels.
+		return nil, nil, true
 	}
-	ok := true
+	type result struct {
+		name string
+		err  error
+	}
+	results := make(chan result, len(ns))
+	var wg sync.WaitGroup
 	for _, n := range ns {
-		log.Printf("aggregator: sending via %s ...", n.Name())
-		if err := n.Send(msg); err != nil {
-			log.Printf("notifier %s FAILED: %v", n.Name(), err)
-			ok = false
+		wg.Add(1)
+		go func(n notifier.Notifier) {
+			defer wg.Done()
+			log.Printf("aggregator: sending via %s ...", n.Name())
+			err := n.Send(msg)
+			results <- result{n.Name(), err}
+		}(n)
+	}
+	go func() { wg.Wait(); close(results) }()
+
+	for r := range results {
+		if r.err != nil {
+			log.Printf("notifier %s FAILED: %v", r.name, r.err)
+			failed = append(failed, r.name)
 		} else {
-			log.Printf("notifier %s OK", n.Name())
+			log.Printf("notifier %s OK", r.name)
+			succeeded = append(succeeded, r.name)
 		}
 	}
-	return ok
+	anyOK = len(succeeded) > 0
+	return succeeded, failed, anyOK
 }
 
 func (a *Aggregator) cooldown() time.Duration {
